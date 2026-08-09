@@ -196,9 +196,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // STRICT COOLDOWN PAUSE: 12 to 18 seconds forced delay between emails
+    // STRICT COOLDOWN PAUSE: 2 to 3 seconds forced delay between emails
     if (index < recipients.length - 1) {
-      const forcedPauseMs = Math.floor(12000 + Math.random() * 6000); // 12s - 18s
+      const forcedPauseMs = Math.floor(6000 + Math.random() * 3000); // 12s - 18s
       let elapsed = 0;
       const step = 1000;
 
