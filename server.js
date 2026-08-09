@@ -10,6 +10,9 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+// Trust Proxy for correct Client IP detection on Vercel/Cloudflare
+app.set('trust proxy', true);
+
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '';
 
@@ -18,7 +21,7 @@ app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-const activeSessions = {};
+const activeSessions = new Map();
 const transporters = new Map();
 
 /* ==========================================================================
@@ -41,7 +44,7 @@ async function verifyTurnstile(token, ip) {
       body: new URLSearchParams({
         secret: TURNSTILE_SECRET_KEY,
         response: token,
-        remoteip: ip
+        remoteip: ip || ''
       })
     });
     const data = await response.json();
@@ -64,8 +67,8 @@ function getTransporter(email, appPassword) {
       service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 2,
-      maxMessages: 50
+      maxConnections: 3,
+      maxMessages: 100
     });
     transporters.set(cacheKey, transporter);
   }
@@ -144,7 +147,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (SLOW HUMAN-LIKE PACING: 4-8 SECONDS DELAY)
+   SSE STREAM ROUTE (ORGANIC PACING: 4 TO 8 SECONDS DELAY WITH KEEP-ALIVE)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -152,7 +155,9 @@ app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
 
-  const { email, appPassword, senderName, subject, messageBody, recipients, cfToken } = req.body;
+  const { email, appPassword, senderName, subject, messageBody, recipients, cfToken, sessionId } = req.body;
+
+  const currentSession = sessionId || 'global_session';
 
   if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
     res.write(`data: ${JSON.stringify({ success: false, error: "Missing required fields" })}\n\n`);
@@ -172,10 +177,11 @@ app.post("/api/send-stream", async (req, res) => {
   const senderEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
 
-  activeSessions['global_stop'] = false;
+  activeSessions.set(currentSession, true); // true = active
 
   for (let index = 0; index < recipients.length; index++) {
-    if (activeSessions['global_stop']) {
+    // Check if stopped by user
+    if (!activeSessions.get(currentSession)) {
       res.write(`data: ${JSON.stringify({ success: false, error: "Stopped by user" })}\n\n`);
       break;
     }
@@ -183,7 +189,6 @@ app.post("/api/send-stream", async (req, res) => {
     const recipient = recipients[index] ? recipients[index].trim() : "";
     if (!recipient) continue;
 
-    // Send HTTP keep-alive ping during slow delays to prevent connection drops
     res.write(': keep-alive\n\n');
 
     try {
@@ -192,7 +197,6 @@ app.post("/api/send-stream", async (req, res) => {
       const spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Clean, standard MIME structure without spammy custom headers
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
@@ -214,19 +218,22 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // ORGANIC PACING: Random delay between 2.0s and 4.0s to simulate natural sending
+    // ORGANIC HUMAN PACING: Delay between 4 to 8 seconds
     if (index < recipients.length - 1) {
-      const randomDelay = Math.floor(600 + Math.random() * 600);
-      
-      // Ping client every 2 seconds during the long wait to keep socket alive
-      const delayIntervals = Math.floor(randomDelay / 2000);
-      for (let i = 0; i < delayIntervals; i++) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        res.write(': keep-alive\n\n');
+      const randomDelay = Math.floor(4000 + Math.random() * 4000); // 4.0s - 8.0s
+      const interval = 1000;
+      let elapsed = 0;
+
+      while (elapsed < randomDelay) {
+        if (!activeSessions.get(currentSession)) break;
+        await new Promise(resolve => setTimeout(resolve, interval));
+        elapsed += interval;
+        res.write(': keep-alive\n\n'); // Prevents browser/Vercel SSE timeout drops
       }
     }
   }
 
+  activeSessions.delete(currentSession);
   res.write("data: [DONE]\n\n");
   res.end();
 });
@@ -235,7 +242,10 @@ app.post("/api/send-stream", async (req, res) => {
    STOP ROUTE
    ========================================================================== */
 app.post("/api/stop", (req, res) => {
-  activeSessions['global_stop'] = true;
+  const { sessionId } = req.body;
+  const currentSession = sessionId || 'global_session';
+  
+  activeSessions.set(currentSession, false); // Trigger stop signal
   res.json({ success: true, message: "Stop process registered" });
 });
 
