@@ -20,6 +20,7 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const activeSessions = new Map();
+const transporters = new Map();
 
 /* ==========================================================================
    ROOT ROUTE
@@ -29,7 +30,7 @@ app.get('/', (req, res) => {
 });
 
 /* ==========================================================================
-   HELPER: TURNSTILE VERIFICATION
+   HELPER: CLOUDFLARE TURNSTILE VERIFICATION
    ========================================================================== */
 async function verifyTurnstile(token, ip) {
   if (!TURNSTILE_SECRET_KEY) return true;
@@ -52,18 +53,30 @@ async function verifyTurnstile(token, ip) {
 }
 
 /* ==========================================================================
-   TRANSPORTER GENERATOR (Non-Pooling for Safety)
+   INBOX OPTIMIZED TRANSPORTER (POOLED FOR INBOX DELIVERY)
    ========================================================================== */
-function createSafeTransporter(email, appPassword) {
-  return nodemailer.createTransport({
-    service: "gmail",
-    auth: { user: email.toLowerCase().trim(), pass: appPassword },
-    // Strict connection limits to avoid getting flagged
-    maxConnections: 1,
-    maxMessages: 5
-  });
+function getInboxTransporter(email, appPassword) {
+  const cleanEmail = email.toLowerCase().trim();
+  const cacheKey = `${cleanEmail}_${appPassword}`;
+
+  if (!transporters.has(cacheKey)) {
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user: cleanEmail, pass: appPassword },
+      pool: true,             // Connection reuse prevents spam flagging
+      maxConnections: 1,      // Single line connection for authentic behavior
+      maxMessages: 100,
+      rateDelta: 3000,        // 3 seconds rate delta
+      rateLimit: 1
+    });
+    transporters.set(cacheKey, transporter);
+  }
+  return transporters.get(cacheKey);
 }
 
+/* ==========================================================================
+   SPINTAX PARSER ({Hi|Hello|Hey})
+   ========================================================================== */
 function parseSpintax(text) {
   if (!text) return "";
   let spun = text;
@@ -79,6 +92,9 @@ function parseSpintax(text) {
   return spun;
 }
 
+/* ==========================================================================
+   CLEAN TEXT FALLBACK FOR MIME SCORE
+   ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
   return html
@@ -97,7 +113,7 @@ function convertHtmlToText(html) {
 }
 
 /* ==========================================================================
-   AUTHENTICATION
+   AUTHENTICATION ROUTES
    ========================================================================== */
 app.post("/api/auth", (req, res) => {
   const { password } = req.body;
@@ -116,7 +132,7 @@ app.post("/api/verify", async (req, res) => {
   }
 
   try {
-    const transporter = createSafeTransporter(email, appPassword);
+    const transporter = getInboxTransporter(email, appPassword);
     await transporter.verify();
     return res.json({ success: true, message: "SMTP connection verified" });
   } catch (error) {
@@ -125,7 +141,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   STRICT-PAUSE SSE STREAM ROUTE
+   3-SECOND INTERVAL SSE STREAM ROUTE
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -137,14 +153,7 @@ app.post("/api/send-stream", async (req, res) => {
 
   const currentSession = sessionId || 'session_' + Date.now();
 
-  // Safety check: Limit max recipients per batch to prevent server abuse
-  if (!Array.isArray(recipients) || recipients.length > 50) {
-    res.write(`data: ${JSON.stringify({ success: false, error: "Batch limit exceeded. Max 50 recipients allowed at once." })}\n\n`);
-    res.end();
-    return;
-  }
-
-  if (!email || !appPassword || recipients.length === 0) {
+  if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
     res.write(`data: ${JSON.stringify({ success: false, error: "Missing required fields" })}\n\n`);
     res.end();
     return;
@@ -163,7 +172,7 @@ app.post("/api/send-stream", async (req, res) => {
   const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
 
   activeSessions.set(currentSession, true);
-  const transporter = createSafeTransporter(email, appPassword);
+  const transporter = getInboxTransporter(email, appPassword);
 
   for (let index = 0; index < recipients.length; index++) {
     // Check stop flag
@@ -180,10 +189,13 @@ app.post("/api/send-stream", async (req, res) => {
       const spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
+      // Inbox Deliverability Headers Structure
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
+        replyTo: senderEmail,
         subject: spunSubject,
+        date: new Date(),
         text: isHtml ? convertHtmlToText(spunBody) : spunBody,
         ...(isHtml && { html: spunBody })
       };
@@ -196,17 +208,17 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // STRICT COOLDOWN PAUSE: 2 to 3 seconds forced delay between emails
+    // STRICT 3-SECOND DELAY WITH ORGANIC MICRO-VARIATION (3.0s - 3.4s)
     if (index < recipients.length - 1) {
-      const forcedPauseMs = Math.floor(6000 + Math.random() * 3000); // 12s - 18s
+      const delayMs = 3000 + Math.floor(Math.random() * 400); // ~3 seconds
       let elapsed = 0;
       const step = 1000;
 
-      while (elapsed < forcedPauseMs) {
+      while (elapsed < delayMs) {
         if (activeSessions.get(currentSession) === false) break;
         await new Promise(r => setTimeout(r, step));
         elapsed += step;
-        res.write(': keep-alive\n\n'); // Keep socket open
+        res.write(': keep-alive\n\n');
       }
     }
   }
@@ -224,7 +236,6 @@ app.post("/api/stop", (req, res) => {
   if (sessionId) {
     activeSessions.set(sessionId, false);
   } else {
-    // Stop all sessions if no ID provided
     for (let [key] of activeSessions) {
       activeSessions.set(key, false);
     }
