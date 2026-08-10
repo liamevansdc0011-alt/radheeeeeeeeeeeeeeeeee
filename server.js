@@ -3,6 +3,7 @@ import express from 'express';
 import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,15 +12,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.set('trust proxy', true);
 
+const PORT = process.env.PORT || 3000;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '';
 
-// Express Middleware Setup
+// Express Middleware
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// Active Sending Jobs Set
 const runningJobs = new Set();
 
 /* ==========================================================================
@@ -30,7 +31,23 @@ app.get('/', (req, res) => {
 });
 
 /* ==========================================================================
-   HELPER: CLOUDFLARE TURNSTILE VERIFICATION
+   DYNAMIC ANTI-SPAM FOOTER GENERATOR
+   ========================================================================== */
+function getAntiSpamFooter() {
+  const refNum = Math.floor(100000 + Math.random() * 900000);
+  const trackHash = crypto.randomBytes(6).toString('hex');
+  
+  // Clean visible reference footer
+  const visibleFooter = `<br/><br/><div style="font-size:11px; color:#888888; font-family:sans-serif; margin-top:15px; border-top:1px solid #eeeeee; padding-top:8px;">Ref ID: ${refNum}</div>`;
+  
+  // Invisible dynamic fingerprint to make every email body unique
+  const hiddenHash = `<div style="display:none !important; opacity:0; color:transparent; height:0; width:0; font-size:0px;">[id:${trackHash}]</div>`;
+
+  return { visibleFooter, hiddenHash, refNum };
+}
+
+/* ==========================================================================
+   TURNSTILE VERIFICATION
    ========================================================================== */
 async function verifyTurnstile(token, ip) {
   if (!TURNSTILE_SECRET_KEY) return true;
@@ -47,7 +64,7 @@ async function verifyTurnstile(token, ip) {
     const data = await response.json();
     return data.success;
   } catch (err) {
-    console.error("Turnstile verification error:", err);
+    console.error("Turnstile error:", err);
     return false;
   }
 }
@@ -71,7 +88,7 @@ function processSpintax(text) {
 }
 
 /* ==========================================================================
-   PLAIN TEXT FALLBACK GENERATOR
+   PLAIN TEXT GENERATOR
    ========================================================================== */
 function makePlainText(html) {
   if (!html) return "";
@@ -91,7 +108,7 @@ function makePlainText(html) {
 }
 
 /* ==========================================================================
-   AUTHENTICATION ROUTES
+   AUTH ROUTES
    ========================================================================== */
 app.post("/api/auth", (req, res) => {
   const { password } = req.body;
@@ -124,7 +141,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (FAST 2-SECOND INTERVAL ENGINE)
+   HIGH INBOXING STREAM ROUTE (STRICT 2-SEC DELAY)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -153,11 +170,13 @@ app.post("/api/send-stream", async (req, res) => {
   const cleanSender = email.toLowerCase().trim();
   const displayName = (senderName || "").replace(/"/g, "").trim();
 
-  // Direct SSL Transporter
   const transporter = nodemailer.createTransport({
     host: "smtp.gmail.com",
     port: 465,
-    secure: true, // Direct SSL connection
+    secure: true,
+    pool: true,
+    maxConnections: 1,
+    maxMessages: 100,
     auth: {
       user: cleanSender,
       pass: appPassword
@@ -170,7 +189,6 @@ app.post("/api/send-stream", async (req, res) => {
   runningJobs.add(jobId);
 
   for (let i = 0; i < recipients.length; i++) {
-    // Check if stopped by user
     if (!runningJobs.has(jobId)) {
       res.write(`data: ${JSON.stringify({ success: false, error: "Stopped by user" })}\n\n`);
       break;
@@ -180,50 +198,57 @@ app.post("/api/send-stream", async (req, res) => {
     if (!targetEmail) continue;
 
     try {
+      const { visibleFooter, hiddenHash, refNum } = getAntiSpamFooter();
       const finalSubject = processSpintax(subject);
-      const finalBody = processSpintax(messageBody);
-      const isHtml = /<[a-z][\s\S]*>/i.test(finalBody);
+      const rawBody = processSpintax(messageBody);
 
-      // Unique RFC Message-ID to help avoid spam categorization
+      const isHtmlInput = /<[a-z][\s\S]*>/i.test(rawBody);
+      const formattedBody = isHtmlInput ? rawBody : rawBody.replace(/\n/g, '<br/>');
+
+      const fullHtml = `
+        <div style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #222222; line-height: 1.5;">
+          ${formattedBody}
+          ${visibleFooter}
+          ${hiddenHash}
+        </div>
+      `;
+
       const domain = cleanSender.split('@')[1] || 'gmail.com';
-      const customMessageId = `<${Date.now()}.${Math.random().toString(36).substring(2, 10)}@${domain}>`;
+      const customMessageId = `<${Date.now()}.${crypto.randomBytes(4).toString('hex')}@${domain}>`;
 
       const mailPayload = {
         from: displayName ? `"${displayName}" <${cleanSender}>` : cleanSender,
         to: targetEmail,
         replyTo: cleanSender,
         subject: finalSubject,
+        html: fullHtml,
+        text: makePlainText(rawBody) + `\n\nRef ID: ${refNum}`,
         headers: {
           'Message-ID': customMessageId,
-          'X-Mailer': 'GMailer/3.0',
-          'X-Priority': '3'
+          'X-Entity-Ref-ID': `${refNum}`,
+          'X-Auto-Response-Suppress': 'OOF, AutoReply',
+          'Date': new Date().toUTCString()
         }
       };
 
-      if (isHtml) {
-        mailPayload.html = finalBody;
-        mailPayload.text = makePlainText(finalBody);
-      } else {
-        mailPayload.text = finalBody;
-      }
-
       await transporter.sendMail(mailPayload);
-      res.write(`data: ${JSON.stringify({ success: true, recipient: targetEmail, index: i + 1, total: recipients.length })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient: targetEmail, refCode: refNum, index: i + 1, total: recipients.length })}\n\n`);
 
     } catch (err) {
       console.error(`Error sending to ${targetEmail}:`, err.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient: targetEmail, error: err.message })}\n\n`);
     }
 
-    // STRICT 2-SECOND DELAY (Fast Speed)
+    // STRICT 2-SECOND DELAY (HUMAN BEHAVIOR RANDOMIZED MICRO-VARIATION)
     if (i < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Exactly 2 Seconds
+      const dynamic2SecDelay = 1900 + Math.floor(Math.random() * 200); // ~2 Seconds
+      await new Promise(resolve => setTimeout(resolve, dynamic2SecDelay));
       res.write(': keep-alive\n\n');
     }
   }
 
   runningJobs.delete(jobId);
-  transporter.close(); // Close SMTP Socket when finished
+  transporter.close();
   res.write("data: [DONE]\n\n");
   res.end();
 });
@@ -241,7 +266,10 @@ app.post("/api/stop", (req, res) => {
   res.json({ success: true, message: "Sending process stopped" });
 });
 
-/* ==========================================================================
-   VERCEL HANDLER EXPORT
-   ========================================================================== */
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
 export default app;
