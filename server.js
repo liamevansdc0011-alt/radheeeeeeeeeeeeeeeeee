@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express from 'express';
-import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -14,13 +13,13 @@ app.set('trust proxy', true);
 
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || ''; // Resend.com se milegi
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const activeSessions = new Map();
-const transporters = new Map();
 
 /* ==========================================================================
    ROOT ROUTE
@@ -28,51 +27,6 @@ const transporters = new Map();
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
-
-/* ==========================================================================
-   HELPER: CLOUDFLARE TURNSTILE VERIFICATION
-   ========================================================================== */
-async function verifyTurnstile(token, ip) {
-  if (!TURNSTILE_SECRET_KEY) return true;
-  try {
-    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        secret: TURNSTILE_SECRET_KEY,
-        response: token,
-        remoteip: ip || ''
-      })
-    });
-    const data = await response.json();
-    return data.success;
-  } catch (error) {
-    console.error("Turnstile Error:", error);
-    return false;
-  }
-}
-
-/* ==========================================================================
-   INBOX OPTIMIZED TRANSPORTER (POOLED FOR INBOX DELIVERY)
-   ========================================================================== */
-function getInboxTransporter(email, appPassword) {
-  const cleanEmail = email.toLowerCase().trim();
-  const cacheKey = `${cleanEmail}_${appPassword}`;
-
-  if (!transporters.has(cacheKey)) {
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: cleanEmail, pass: appPassword },
-      pool: true,             // Connection reuse prevents spam flagging
-      maxConnections: 1,      // Single line connection for authentic behavior
-      maxMessages: 100,
-      rateDelta: 3000,        // 3 seconds rate delta
-      rateLimit: 1
-    });
-    transporters.set(cacheKey, transporter);
-  }
-  return transporters.get(cacheKey);
-}
 
 /* ==========================================================================
    SPINTAX PARSER ({Hi|Hello|Hey})
@@ -93,26 +47,6 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   CLEAN TEXT FALLBACK FOR MIME SCORE
-   ========================================================================== */
-function convertHtmlToText(html) {
-  if (!html) return "";
-  return html
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/\n\s*\n/g, '\n\n')
-    .trim();
-}
-
-/* ==========================================================================
    AUTHENTICATION ROUTES
    ========================================================================== */
 app.post("/api/auth", (req, res) => {
@@ -122,26 +56,8 @@ app.post("/api/auth", (req, res) => {
   return res.status(401).json({ success: false, message: "Incorrect password" });
 });
 
-app.post("/api/verify", async (req, res) => {
-  const { email, appPassword, cfToken } = req.body;
-  if (!email || !appPassword) return res.status(400).json({ success: false, message: "Email & App Password required" });
-
-  if (cfToken && TURNSTILE_SECRET_KEY) {
-    const isValid = await verifyTurnstile(cfToken, req.ip);
-    if (!isValid) return res.status(400).json({ success: false, message: "Security check failed." });
-  }
-
-  try {
-    const transporter = getInboxTransporter(email, appPassword);
-    await transporter.verify();
-    return res.json({ success: true, message: "SMTP connection verified" });
-  } catch (error) {
-    return res.status(401).json({ success: false, message: "Auth failed. Check App Password." });
-  }
-});
-
 /* ==========================================================================
-   3-SECOND INTERVAL SSE STREAM ROUTE
+   RESEND API SSE STREAM ROUTE (INBOX GUARANTEED)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -149,33 +65,26 @@ app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
 
-  const { email, appPassword, senderName, subject, messageBody, recipients, cfToken, sessionId } = req.body;
+  const { senderEmail, senderName, subject, messageBody, recipients, sessionId, apiKey } = req.body;
 
   const currentSession = sessionId || 'session_' + Date.now();
+  const activeApiKey = apiKey || RESEND_API_KEY;
 
-  if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
-    res.write(`data: ${JSON.stringify({ success: false, error: "Missing required fields" })}\n\n`);
+  if (!activeApiKey) {
+    res.write(`data: ${JSON.stringify({ success: false, error: "Resend API Key is missing!" })}\n\n`);
     res.end();
     return;
   }
 
-  if (cfToken && TURNSTILE_SECRET_KEY) {
-    const isValid = await verifyTurnstile(cfToken, req.ip);
-    if (!isValid) {
-      res.write(`data: ${JSON.stringify({ success: false, error: "Turnstile check failed" })}\n\n`);
-      res.end();
-      return;
-    }
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    res.write(`data: ${JSON.stringify({ success: false, error: "Recipients list is empty" })}\n\n`);
+    res.end();
+    return;
   }
 
-  const senderEmail = email.toLowerCase().trim();
-  const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
-
   activeSessions.set(currentSession, true);
-  const transporter = getInboxTransporter(email, appPassword);
 
   for (let index = 0; index < recipients.length; index++) {
-    // Check stop flag
     if (activeSessions.get(currentSession) === false) {
       res.write(`data: ${JSON.stringify({ success: false, error: "Process stopped by user" })}\n\n`);
       break;
@@ -189,37 +98,38 @@ app.post("/api/send-stream", async (req, res) => {
       const spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Inbox Deliverability Headers Structure
-      const mailOptions = {
-        from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
-        to: recipient,
-        replyTo: senderEmail,
-        subject: spunSubject,
-        date: new Date(),
-        text: isHtml ? convertHtmlToText(spunBody) : spunBody,
-        ...(isHtml && { html: spunBody })
-      };
+      // Resend API Fetch Call
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${activeApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: senderName ? `${senderName} <onboarding@resend.dev>` : 'onboarding@resend.dev',
+          to: [recipient],
+          subject: spunSubject,
+          [isHtml ? 'html' : 'text']: spunBody
+        })
+      });
 
-      await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient, index: index + 1, total: recipients.length })}\n\n`);
+      const data = await response.json();
+
+      if (response.ok) {
+        res.write(`data: ${JSON.stringify({ success: true, recipient, index: index + 1, total: recipients.length })}\n\n`);
+      } else {
+        res.write(`data: ${JSON.stringify({ success: false, recipient, error: data.message || "Sending failed" })}\n\n`);
+      }
 
     } catch (error) {
       console.error(`Error sending to ${recipient}:`, error.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // STRICT 3-SECOND DELAY WITH ORGANIC MICRO-VARIATION (3.0s - 3.4s)
+    // Smooth 3 second delay
     if (index < recipients.length - 1) {
-      const delayMs = 3000 + Math.floor(Math.random() * 400); // ~3 seconds
-      let elapsed = 0;
-      const step = 1000;
-
-      while (elapsed < delayMs) {
-        if (activeSessions.get(currentSession) === false) break;
-        await new Promise(r => setTimeout(r, step));
-        elapsed += step;
-        res.write(': keep-alive\n\n');
-      }
+      await new Promise(r => setTimeout(r, 3000));
+      res.write(': keep-alive\n\n');
     }
   }
 
@@ -233,13 +143,7 @@ app.post("/api/send-stream", async (req, res) => {
    ========================================================================== */
 app.post("/api/stop", (req, res) => {
   const { sessionId } = req.body;
-  if (sessionId) {
-    activeSessions.set(sessionId, false);
-  } else {
-    for (let [key] of activeSessions) {
-      activeSessions.set(key, false);
-    }
-  }
+  if (sessionId) activeSessions.set(sessionId, false);
   res.json({ success: true, message: "Stop signal sent" });
 });
 
