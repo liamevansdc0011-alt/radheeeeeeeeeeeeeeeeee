@@ -1,21 +1,11 @@
 {
-  "name": "mail-stream-service",
-  "version": "2.0.0",
-  "description": "High-performance email dispatch system with SSE streaming",
-  "main": "server.js",
+  "name": "bulk-email-sender",
+  "version": "1.0.0",
   "type": "module",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node server.js"
   },
-  "keywords": [
-    "express",
-    "nodemailer",
-    "email-sender",
-    "sse-stream"
-  ],
-  "author": "",
-  "license": "MIT",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
