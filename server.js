@@ -10,6 +10,9 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+// Trust proxy for Vercel / Nginx IP forwarding
+app.set('trust proxy', true);
+
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '##';
 
 // Express Middleware Setup
@@ -19,6 +22,13 @@ app.use(express.static(path.join(__dirname, "public")));
 
 const activeSessions = {};
 const transporters = new Map();
+
+/* ==========================================================================
+   ROOT ROUTE (Prevents Vercel / Cloud Load Failures)
+   ========================================================================== */
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 /* ==========================================================================
    TRANSPORTER POOLING (TLS Socket Reuse)
@@ -32,8 +42,8 @@ function getTransporter(email, appPassword) {
       service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 100
+      maxConnections: 5,   // High-throughput socket pool
+      maxMessages: 200
     });
     transporters.set(cacheKey, transporter);
   }
@@ -101,13 +111,13 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (STABLE & SECURE LOOP)
+   SSE STREAM ROUTE (100MS SPEED + INBOX OPTIMIZED HEADERS)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Prevents proxy buffering on Vercel/Nginx
+  res.setHeader('X-Accel-Buffering', 'no');
 
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
@@ -131,7 +141,7 @@ app.post("/api/send-stream", async (req, res) => {
     const recipient = recipients[index] ? recipients[index].trim() : "";
     if (!recipient) continue;
 
-    // Connection keep-alive ping
+    // Keep-alive ping
     res.write(': keep-alive\n\n');
 
     try {
@@ -140,10 +150,22 @@ app.post("/api/send-stream", async (req, res) => {
       const spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
+      // Generate RFC-compliant unique Message-ID
+      const domain = senderEmail.split('@')[1] || 'gmail.com';
+      const uniqueMessageId = `<${Date.now()}.${Math.random().toString(36).substring(2, 10)}@${domain}>`;
+
+      // Inbox Deliverability Headers
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject
+        replyTo: senderEmail,
+        subject: spunSubject,
+        date: new Date(),
+        headers: {
+          'Message-ID': uniqueMessageId,
+          'X-Priority': '3',
+          'X-MSMail-Priority': 'Normal'
+        }
       };
 
       if (isHtml) {
@@ -161,7 +183,7 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Delay: 100ms (0.1 Second) per email
+    // EXACT SPEED RETAINED: 100ms (0.1 Second) delay
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -179,7 +201,4 @@ app.post("/api/stop", (req, res) => {
   res.json({ success: true, message: "Stop process registered" });
 });
 
-/* ==========================================================================
-   VERCEL / SERVERLESS HANDLER EXPORT
-   ========================================================================== */
 export default app;
