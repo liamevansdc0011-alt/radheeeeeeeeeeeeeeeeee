@@ -10,8 +10,6 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-app.set('trust proxy', true);
-
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '##';
 
 // Express Middleware Setup
@@ -23,14 +21,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   ROOT ROUTE (Fixes Vercel/Server Load)
-   ========================================================================== */
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-/* ==========================================================================
-   TRANSPORTER POOLING (TLS Socket Reuse for Fast Delivery)
+   TRANSPORTER POOLING (TLS Socket Reuse)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -41,8 +32,8 @@ function getTransporter(email, appPassword) {
       service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 5,     // High throughput connections
-      maxMessages: 200
+      maxConnections: 3,
+      maxMessages: 100
     });
     transporters.set(cacheKey, transporter);
   }
@@ -68,7 +59,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME for High Delivery Score)
+   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -110,13 +101,13 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (FAST 100MS SPEED + INBOX OPTIMIZED HEADERS)
+   SSE STREAM ROUTE (STABLE & SECURE LOOP)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('X-Accel-Buffering', 'no'); // Prevents proxy buffering on Vercel/Nginx
 
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
@@ -149,23 +140,10 @@ app.post("/api/send-stream", async (req, res) => {
       const spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Generate unique Message-ID to pass spam filters
-      const domain = senderEmail.split('@')[1] || 'gmail.com';
-      const uniqueMessageId = `<${Date.now()}.${Math.random().toString(36).substring(2, 9)}@${domain}>`;
-
-      // Inbox Deliverability Headers
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        replyTo: senderEmail,
-        subject: spunSubject,
-        date: new Date(),
-        headers: {
-          'Message-ID': uniqueMessageId,
-          'X-Mailer': 'Mailer-Engine/v2.1',
-          'X-Priority': '3 (Normal)',
-          'Importance': 'Normal'
-        }
+        subject: spunSubject
       };
 
       if (isHtml) {
@@ -183,7 +161,7 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // EXACT SPEED RETAINED: 100ms (0.1 Second) delay as requested
+    // Delay: 100ms (0.1 Second) per email
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
