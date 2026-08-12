@@ -1,4 +1,4 @@
-```json
+
 {
   "name": "secure-mail-console",
   "version": "1.0.0",
@@ -18,4 +18,3 @@
     "nodemailer": "^8.0.3"
   }
 }
-```
