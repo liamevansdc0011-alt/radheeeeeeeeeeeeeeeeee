@@ -3,7 +3,6 @@ import express from 'express';
 import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
-import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,7 +21,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (Optimized TLS Connection Keep-Alive)
+   TRANSPORTER POOLING (TLS Socket Reuse)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -30,16 +29,11 @@ function getTransporter(email, appPassword) {
 
   if (!transporters.has(cacheKey)) {
     const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
+      service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 5,
-      maxMessages: 200,
-      tls: {
-        rejectUnauthorized: false
-      }
+      maxConnections: 3,
+      maxMessages: 100
     });
     transporters.set(cacheKey, transporter);
   }
@@ -47,7 +41,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   ADVANCED SPINTAX PARSER ({Hi|Hello|Hey})
+   SPINTAX PARSER ({Hi|Hello|Hey})
    ========================================================================== */
 function parseSpintax(text) {
   if (!text) return "";
@@ -65,21 +59,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   DYNAMIC FOOTER & SIGNATURE (Uniqueness Generator)
-   ========================================================================== */
-function generateAntiSpamFooter() {
-  const labels = ['Ref ID', 'Case No', 'Ticket', 'Doc ID', 'Tracking'];
-  const label = labels[Math.floor(Math.random() * labels.length)];
-  const randomHex = crypto.randomBytes(3).toString('hex').toUpperCase();
-  
-  const visibleFooter = `<br/><br/><div style="font-size:11px; color:#999999; font-family:Arial, sans-serif; border-top:1px solid #f0f0f0; padding-top:8px;">${label}: #${randomHex}</div>`;
-  const textFooter = `\n\n${label}: #${randomHex}`;
-  
-  return { visibleFooter, textFooter, refCode: `${label}: #${randomHex}` };
-}
-
-/* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK
+   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -121,13 +101,13 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (HIGH INBOXING ENGINE - FAST 100MS DELAY)
+   SSE STREAM ROUTE (STABLE & SECURE LOOP)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('X-Accel-Buffering', 'no'); // Prevents proxy buffering on Vercel/Nginx
 
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
@@ -151,34 +131,26 @@ app.post("/api/send-stream", async (req, res) => {
     const recipient = recipients[index] ? recipients[index].trim() : "";
     if (!recipient) continue;
 
+    // Connection keep-alive ping
     res.write(': keep-alive\n\n');
 
     try {
       const transporter = getTransporter(email, appPassword);
       const spunSubject = parseSpintax(subject);
       const spunBody = parseSpintax(messageBody);
-      const { visibleFooter, textFooter } = generateAntiSpamFooter();
-
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
-      const domain = senderEmail.split('@')[1] || 'gmail.com';
-      const customMessageId = `<${Date.now()}.${crypto.randomBytes(4).toString('hex')}@${domain}>`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject,
-        headers: {
-          'Message-ID': customMessageId,
-          'X-Auto-Response-Suppress': 'OOF, AutoReply',
-          'Date': new Date().toUTCString()
-        }
+        subject: spunSubject
       };
 
       if (isHtml) {
-        mailOptions.html = `<div style="font-family:Arial,sans-serif;font-size:14px;color:#222222;line-height:1.5;">${spunBody}${visibleFooter}</div>`;
-        mailOptions.text = convertHtmlToText(spunBody) + textFooter;
+        mailOptions.html = spunBody;
+        mailOptions.text = convertHtmlToText(spunBody);
       } else {
-        mailOptions.text = spunBody + textFooter;
+        mailOptions.text = spunBody;
       }
 
       await transporter.sendMail(mailOptions);
@@ -189,7 +161,7 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // STRICT 100MS SPEED (0.1 Second Delay Maintained)
+    // Delay: 100ms (0.1 Second) per email
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -207,4 +179,7 @@ app.post("/api/stop", (req, res) => {
   res.json({ success: true, message: "Stop process registered" });
 });
 
+/* ==========================================================================
+   VERCEL / SERVERLESS HANDLER EXPORT
+   ========================================================================== */
 export default app;
