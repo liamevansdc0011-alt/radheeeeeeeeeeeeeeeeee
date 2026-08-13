@@ -11,17 +11,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '##';
 
-// Middleware
+// Middleware Setup
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING
+   SMTP TRANSPORTER MANAGEMENT
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = String(email || '').toLowerCase().trim();
@@ -38,7 +38,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   ROUTES
+   AUTHENTICATION ROUTES
    ========================================================================== */
 app.post("/api/auth", (req, res) => {
   try {
@@ -53,7 +53,9 @@ app.post("/api/auth", (req, res) => {
 app.post("/api/verify", async (req, res) => {
   try {
     const { email, appPassword } = req.body || {};
-    if (!email || !appPassword) return res.status(400).json({ success: false, message: "Credentials required" });
+    if (!email || !appPassword) {
+      return res.status(400).json({ success: false, message: "Credentials required" });
+    }
 
     const transporter = getTransporter(email, appPassword);
     await transporter.verify();
@@ -64,7 +66,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE
+   SSE STREAM ROUTE (SAFE & CRASH-PROOF)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   try {
@@ -115,7 +117,7 @@ app.post("/api/send-stream", async (req, res) => {
         res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
       }
 
-      // Safe Delay: 1-2 Seconds Gap
+      // Safe Delay (1 to 2 Seconds)
       if (index < recipients.length - 1) {
         const fastDelay = Math.floor(Math.random() * (2000 - 1000 + 1)) + 1000;
         await new Promise(resolve => setTimeout(resolve, fastDelay));
@@ -125,7 +127,7 @@ app.post("/api/send-stream", async (req, res) => {
     res.write("data: [DONE]\n\n");
     res.end();
   } catch (err) {
-    console.error("Server Stream Error:", err);
+    console.error("Stream execution error:", err);
     if (!res.headersSent) {
       res.status(500).json({ success: false, error: err.message });
     }
@@ -140,10 +142,12 @@ app.post("/api/stop", (req, res) => {
   res.json({ success: true, message: "Stop process registered" });
 });
 
-// Local Development Server Support
+/* ==========================================================================
+   SERVER INITIALIZATION
+   ========================================================================== */
 const PORT = process.env.PORT || 3000;
 if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 }
 
 export default app;
