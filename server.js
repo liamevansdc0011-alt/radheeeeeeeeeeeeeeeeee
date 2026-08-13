@@ -66,7 +66,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (SAFE & CRASH-PROOF)
+   SSE STREAM ROUTE (0.3 SECOND SPEED)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   try {
@@ -117,10 +117,9 @@ app.post("/api/send-stream", async (req, res) => {
         res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
       }
 
-      // Safe Delay (1 to 2 Seconds)
+      // SPEED: 0.3 Seconds (300 Milliseconds) Delay
       if (index < recipients.length - 1) {
-        const fastDelay = Math.floor(Math.random() * (2000 - 1000 + 1)) + 1000;
-        await new Promise(resolve => setTimeout(resolve, fastDelay));
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
     }
 
