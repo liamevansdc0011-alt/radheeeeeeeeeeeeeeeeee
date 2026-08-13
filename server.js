@@ -19,7 +19,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   PURE SMTP TRANSPORTER (No Fake Headers / Minimal Pooling)
+   TRANSPORTER POOLING (Optimized for 1-2s Rate Limit)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -28,7 +28,10 @@ function getTransporter(email, appPassword) {
   if (!transporters.has(cacheKey)) {
     const transporter = nodemailer.createTransport({
       service: "gmail",
-      auth: { user: cleanEmail, pass: appPassword }
+      auth: { user: cleanEmail, pass: appPassword },
+      pool: true,
+      maxConnections: 1,
+      maxMessages: 100
     });
     transporters.set(cacheKey, transporter);
   }
@@ -53,12 +56,12 @@ app.post("/api/verify", async (req, res) => {
     await transporter.verify();
     return res.json({ success: true, message: "SMTP verified successfully" });
   } catch (error) {
-    return res.status(401).json({ success: false, message: "Authentication failed." });
+    return res.status(401).json({ success: false, message: "Authentication failed. Check App Password." });
   }
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (INBOX SAFE METHOD)
+   SSE STREAM ROUTE (FAST & SAFE 1-2 SEC LOOP)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -93,12 +96,11 @@ app.post("/api/send-stream", async (req, res) => {
     try {
       const transporter = getTransporter(email, appPassword);
 
-      // Clean Mail Payload (No Marketing / Unsubscribe Headers)
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
         subject: subject,
-        text: messageBody // Send purely as plain text for personal inbox delivery
+        text: messageBody
       };
 
       await transporter.sendMail(mailOptions);
@@ -109,10 +111,10 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // NATURAL DELAY: 10 to 15 Seconds Gap Between Emails
+    // SPEED CONTROL: 1.0 to 2.0 seconds random delay per mail (~1.2s average)
     if (index < recipients.length - 1) {
-      const humanDelay = Math.floor(Math.random() * (15000 - 10000 + 1)) + 10000;
-      await new Promise(resolve => setTimeout(resolve, humanDelay));
+      const fastDelay = Math.floor(Math.random() * (2000 - 1000 + 1)) + 1000;
+      await new Promise(resolve => setTimeout(resolve, fastDelay));
     }
   }
 
