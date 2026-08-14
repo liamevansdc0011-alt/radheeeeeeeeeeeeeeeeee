@@ -4,6 +4,7 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +22,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING
+   TRANSPORTER POOLING (INBOX OPTIMIZED)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -33,7 +34,10 @@ function getTransporter(email, appPassword) {
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
       maxConnections: 1,
-      maxMessages: 50
+      maxMessages: 50,
+      tls: {
+        rejectUnauthorized: false // Prevents connection drops
+      }
     });
     transporters.set(cacheKey, transporter);
   }
@@ -101,7 +105,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (FIXED 3 SECONDS DELAY)
+   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -136,39 +140,55 @@ app.post("/api/send-stream", async (req, res) => {
     try {
       const transporter = getTransporter(email, appPassword);
       const spunSubject = parseSpintax(subject);
-      const spunBody = parseSpintax(messageBody);
+      let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      const domain = senderEmail.split('@')[1] || 'gmail.com';
-      const uniqueMessageId = `<${Date.now()}.${Math.random().toString(36).substring(2, 8)}@${domain}>`;
+      // Generate Unique Tracking ID and Footprint Code
+      const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+      const uniqueMsgId = `<${Date.now()}.${uniqueCode}@gmail.com>`;
+      const timestamp = new Date().toUTCString();
+
+      // Footer ID Code Injection
+      const footerHtml = `
+        <br><br>
+        <div style="margin-top: 20px; padding-top: 10px; border-top: 1px solid #e0e0e0; font-size: 11px; color: #777777; font-family: Arial, sans-serif;">
+          <p style="margin: 0;">Ref Code: <strong>#${uniqueCode}</strong> | Sent on: ${timestamp}</p>
+          <p style="margin: 3px 0 0 0;">To unsubscribe or manage notifications, reply to this email with "UNSUBSCRIBE".</p>
+        </div>
+      `;
+
+      const footerText = `\n\n---\nRef Code: #${uniqueCode} | Sent: ${timestamp}\nTo unsubscribe, reply with "UNSUBSCRIBE".`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
         subject: spunSubject,
+        // Anti-Spam Deliverability Headers
         headers: {
-          'X-Mailer': 'Nodemailer Express Engine',
-          'Message-ID': uniqueMessageId,
-          'X-Report-Abuse-To': senderEmail
+          'Message-ID': uniqueMsgId,
+          'X-Mailer': 'Microsoft Outlook 16.0', // Spoofs standard client header
+          'X-Entity-Ref-ID': uniqueCode,
+          'List-Unsubscribe': `<mailto:${senderEmail}?subject=unsubscribe>`,
+          'X-Auto-Response-Suppress': 'OOF, AutoReply'
         }
       };
 
       if (isHtml) {
-        mailOptions.html = spunBody;
-        mailOptions.text = convertHtmlToText(spunBody);
+        mailOptions.html = spunBody + footerHtml;
+        mailOptions.text = convertHtmlToText(spunBody) + footerText;
       } else {
-        mailOptions.text = spunBody;
+        mailOptions.text = spunBody + footerText;
       }
 
       await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient, code: uniqueCode })}\n\n`);
 
     } catch (error) {
       console.error(`Error sending to ${recipient}:`, error.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Delay: Exact 3 Seconds (3000ms) per email
+    // Delay: Fixed 3 Seconds (3000ms) per email
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 3000));
     }
