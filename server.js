@@ -36,7 +36,7 @@ function getTransporter(email, appPassword) {
       maxConnections: 3,
       maxMessages: 100,
       tls: {
-        rejectUnauthorized: false, // Prevents TLS handshake failure on Vercel
+        rejectUnauthorized: false,
         ciphers: 'SSLv3'
       }
     });
@@ -106,13 +106,13 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (SAFE & INBOX DELIVERABILITY FIX)
+   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Prevents proxy buffering on Vercel/Nginx
+  res.setHeader('X-Accel-Buffering', 'no');
 
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
@@ -136,7 +136,6 @@ app.post("/api/send-stream", async (req, res) => {
     const recipient = recipients[index] ? recipients[index].trim() : "";
     if (!recipient) continue;
 
-    // Connection keep-alive ping
     res.write(': keep-alive\n\n');
 
     try {
@@ -151,30 +150,27 @@ app.post("/api/send-stream", async (req, res) => {
       const domain = senderEmail.split('@')[1] || 'gmail.com';
       const uniqueMessageId = `<${Date.now()}.${uniqueCode}@${domain}>`;
 
-      // Footer Reference Code
+      // Clean Footer (Only Reference Code & Timestamp)
       const footerHtml = `
         <br><br>
         <div style="margin-top: 15px; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: sans-serif;">
           Ref No: <strong>#${uniqueCode}</strong> | Date: ${timestamp}
-          <br>
-          <span style="font-size: 10px; color: #94a3b8;">To unsubscribe, reply "UNSUBSCRIBE" to this email.</span>
         </div>
       `;
 
-      const footerText = `\n\n---\nRef No: #${uniqueCode} | Date: ${timestamp}\nTo unsubscribe, reply "UNSUBSCRIBE".`;
+      const footerText = `\n\n---\nRef No: #${uniqueCode} | Date: ${timestamp}`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
         subject: spunSubject,
         priority: 'high',
-        // Anti-Spam Headers
+        // Anti-Spam Headers (Unsubscribe Removed)
         headers: {
           'Message-ID': uniqueMessageId,
           'X-Mailer': 'Microsoft Outlook 16.0',
           'X-Priority': '3',
           'X-Entity-Ref-ID': uniqueCode,
-          'List-Unsubscribe': `<mailto:${senderEmail}?subject=unsubscribe>`,
           'X-Report-Abuse-To': senderEmail
         }
       };
@@ -194,7 +190,7 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Aapka exact speed delay (400ms)
+    // Exact Speed Delay (400ms)
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 400));
     }
@@ -212,7 +208,4 @@ app.post("/api/stop", (req, res) => {
   res.json({ success: true, message: "Stop process registered" });
 });
 
-/* ==========================================================================
-   VERCEL / SERVERLESS HANDLER EXPORT
-   ========================================================================== */
 export default app;
