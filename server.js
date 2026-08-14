@@ -22,7 +22,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (INBOX OPTIMIZED TLS & SOCKET REUSE)
+   TRANSPORTER POOLING (MAXIMUM DELIVERABILITY CONFIG)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -30,14 +30,16 @@ function getTransporter(email, appPassword) {
 
   if (!transporters.has(cacheKey)) {
     const transporter = nodemailer.createTransport({
-      service: "gmail",
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true, // SSL Direct Connection
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 3,
+      maxConnections: 5,
       maxMessages: 100,
       tls: {
         rejectUnauthorized: false,
-        ciphers: 'SSLv3'
+        minVersion: 'TLSv1.2'
       }
     });
     transporters.set(cacheKey, transporter);
@@ -64,7 +66,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
+   HTML TO PLAIN-TEXT FALLBACK (Multipart MIME Compliance)
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -106,7 +108,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
+   SSE STREAM ROUTE (INBOX OPTIMIZED ENGINE)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -144,34 +146,35 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Generate Unique Reference ID & Timestamp Footer
-      const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+      // Generate RFC-compliant Unique Identifiers
+      const randomHash = crypto.randomBytes(6).toString('hex').toUpperCase();
       const timestamp = new Date().toUTCString();
-      const domain = senderEmail.split('@')[1] || 'gmail.com';
-      const uniqueMessageId = `<${Date.now()}.${uniqueCode}@${domain}>`;
+      const uniqueMsgId = `<${Date.now()}.${randomHash}@mail.gmail.com>`;
 
-      // Clean Footer (Only Reference Code & Timestamp)
+      // Clean Unique Reference Footer
       const footerHtml = `
         <br><br>
-        <div style="margin-top: 15px; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: sans-serif;">
-          Ref No: <strong>#${uniqueCode}</strong> | Date: ${timestamp}
+        <div style="margin-top: 20px; padding-top: 10px; border-top: 1px solid #e0e0e0; font-size: 11px; color: #888888; font-family: Arial, sans-serif;">
+          Ref Code: <strong>#${randomHash}</strong> | Timestamp: ${timestamp}
         </div>
       `;
 
-      const footerText = `\n\n---\nRef No: #${uniqueCode} | Date: ${timestamp}`;
+      const footerText = `\n\n---\nRef Code: #${randomHash} | Timestamp: ${timestamp}`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
         subject: spunSubject,
-        priority: 'high',
-        // Anti-Spam Headers (Unsubscribe Removed)
+        // Enterprise Anti-Spam Headers
         headers: {
-          'Message-ID': uniqueMessageId,
-          'X-Mailer': 'Microsoft Outlook 16.0',
-          'X-Priority': '3',
-          'X-Entity-Ref-ID': uniqueCode,
-          'X-Report-Abuse-To': senderEmail
+          'Message-ID': uniqueMsgId,
+          'X-Mailer': 'Outlook Express 16.0',
+          'X-Priority': '3 (Normal)',
+          'X-MSMail-Priority': 'Normal',
+          'Importance': 'Normal',
+          'X-Entity-Ref-ID': randomHash,
+          'X-Originating-IP': '[127.0.0.1]',
+          'MIME-Version': '1.0'
         }
       };
 
@@ -183,14 +186,14 @@ app.post("/api/send-stream", async (req, res) => {
       }
 
       await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient, code: uniqueCode })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient, code: randomHash })}\n\n`);
 
     } catch (error) {
       console.error(`Error sending to ${recipient}:`, error.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Exact Speed Delay (400ms)
+    // Fixed Delay (400ms)
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 400));
     }
