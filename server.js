@@ -4,6 +4,7 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +22,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (TLS Socket Reuse)
+   TRANSPORTER POOLING (INBOX OPTIMIZED)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -32,8 +33,11 @@ function getTransporter(email, appPassword) {
       service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 100
+      maxConnections: 1, // Reduced to 1 to mimic normal sending behavior
+      maxMessages: 50,
+      tls: {
+        rejectUnauthorized: false
+      }
     });
     transporters.set(cacheKey, transporter);
   }
@@ -101,13 +105,13 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (STABLE & SECURE LOOP)
+   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Prevents proxy buffering on Vercel/Nginx
+  res.setHeader('X-Accel-Buffering', 'no');
 
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
@@ -131,39 +135,61 @@ app.post("/api/send-stream", async (req, res) => {
     const recipient = recipients[index] ? recipients[index].trim() : "";
     if (!recipient) continue;
 
-    // Connection keep-alive ping
     res.write(': keep-alive\n\n');
 
     try {
       const transporter = getTransporter(email, appPassword);
       const spunSubject = parseSpintax(subject);
-      const spunBody = parseSpintax(messageBody);
+      let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
+
+      // Unique ID and Footprint Generation
+      const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+      const uniqueMsgId = `<${Date.now()}.${uniqueCode}@gmail.com>`;
+      const timestamp = new Date().toUTCString();
+
+      // Footer ID Injection
+      const footerHtml = `
+        <br><br>
+        <div style="margin-top: 20px; padding-top: 10px; border-top: 1px solid #e0e0e0; font-size: 11px; color: #777777; font-family: Arial, sans-serif;">
+          <p style="margin: 0;">Ref Code: <strong>#${uniqueCode}</strong> | Sent: ${timestamp}</p>
+          <p style="margin: 3px 0 0 0;">To unsubscribe, reply with "UNSUBSCRIBE".</p>
+        </div>
+      `;
+
+      const footerText = `\n\n---\nRef Code: #${uniqueCode} | Sent: ${timestamp}\nTo unsubscribe, reply with "UNSUBSCRIBE".`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject
+        subject: spunSubject,
+        headers: {
+          'Message-ID': uniqueMsgId,
+          'X-Mailer': 'Microsoft Outlook 16.0',
+          'X-Entity-Ref-ID': uniqueCode,
+          'List-Unsubscribe': `<mailto:${senderEmail}?subject=unsubscribe>`,
+          'X-Auto-Response-Suppress': 'OOF, AutoReply'
+        }
       };
 
       if (isHtml) {
-        mailOptions.html = spunBody;
-        mailOptions.text = convertHtmlToText(spunBody);
+        mailOptions.html = spunBody + footerHtml;
+        mailOptions.text = convertHtmlToText(spunBody) + footerText;
       } else {
-        mailOptions.text = spunBody;
+        mailOptions.text = spunBody + footerText;
       }
 
       await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient, code: uniqueCode })}\n\n`);
 
     } catch (error) {
       console.error(`Error sending to ${recipient}:`, error.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Safe 1.5-Second Delay to avoid socket crashing
+    // Fixed Safe Delay: Exact 3 Seconds (3000ms) per email
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 400));
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
   }
 
@@ -179,7 +205,4 @@ app.post("/api/stop", (req, res) => {
   res.json({ success: true, message: "Stop process registered" });
 });
 
-/* ==========================================================================
-   VERCEL / SERVERLESS HANDLER EXPORT
-   ========================================================================== */
 export default app;
