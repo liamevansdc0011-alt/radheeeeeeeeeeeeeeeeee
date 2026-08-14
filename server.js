@@ -4,7 +4,6 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,7 +21,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (INBOX OPTIMIZED)
+   TRANSPORTER POOLING (TLS Socket Reuse)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -33,11 +32,8 @@ function getTransporter(email, appPassword) {
       service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 1,
-      maxMessages: 50,
-      tls: {
-        rejectUnauthorized: false // Prevents connection drops
-      }
+      maxConnections: 3,
+      maxMessages: 100
     });
     transporters.set(cacheKey, transporter);
   }
@@ -45,7 +41,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   SPINTAX PARSER
+   SPINTAX PARSER ({Hi|Hello|Hey})
    ========================================================================== */
 function parseSpintax(text) {
   if (!text) return "";
@@ -63,7 +59,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK
+   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -105,13 +101,13 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
+   SSE STREAM ROUTE (STABLE & SECURE LOOP)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('X-Accel-Buffering', 'no'); // Prevents proxy buffering on Vercel/Nginx
 
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
@@ -135,62 +131,39 @@ app.post("/api/send-stream", async (req, res) => {
     const recipient = recipients[index] ? recipients[index].trim() : "";
     if (!recipient) continue;
 
+    // Connection keep-alive ping
     res.write(': keep-alive\n\n');
 
     try {
       const transporter = getTransporter(email, appPassword);
       const spunSubject = parseSpintax(subject);
-      let spunBody = parseSpintax(messageBody);
+      const spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
-
-      // Generate Unique Tracking ID and Footprint Code
-      const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
-      const uniqueMsgId = `<${Date.now()}.${uniqueCode}@gmail.com>`;
-      const timestamp = new Date().toUTCString();
-
-      // Footer ID Code Injection
-      const footerHtml = `
-        <br><br>
-        <div style="margin-top: 20px; padding-top: 10px; border-top: 1px solid #e0e0e0; font-size: 11px; color: #777777; font-family: Arial, sans-serif;">
-          <p style="margin: 0;">Ref Code: <strong>#${uniqueCode}</strong> | Sent on: ${timestamp}</p>
-          <p style="margin: 3px 0 0 0;">To unsubscribe or manage notifications, reply to this email with "UNSUBSCRIBE".</p>
-        </div>
-      `;
-
-      const footerText = `\n\n---\nRef Code: #${uniqueCode} | Sent: ${timestamp}\nTo unsubscribe, reply with "UNSUBSCRIBE".`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject,
-        // Anti-Spam Deliverability Headers
-        headers: {
-          'Message-ID': uniqueMsgId,
-          'X-Mailer': 'Microsoft Outlook 16.0', // Spoofs standard client header
-          'X-Entity-Ref-ID': uniqueCode,
-          'List-Unsubscribe': `<mailto:${senderEmail}?subject=unsubscribe>`,
-          'X-Auto-Response-Suppress': 'OOF, AutoReply'
-        }
+        subject: spunSubject
       };
 
       if (isHtml) {
-        mailOptions.html = spunBody + footerHtml;
-        mailOptions.text = convertHtmlToText(spunBody) + footerText;
+        mailOptions.html = spunBody;
+        mailOptions.text = convertHtmlToText(spunBody);
       } else {
-        mailOptions.text = spunBody + footerText;
+        mailOptions.text = spunBody;
       }
 
       await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient, code: uniqueCode })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient })}\n\n`);
 
     } catch (error) {
       console.error(`Error sending to ${recipient}:`, error.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Delay: Fixed 3 Seconds (3000ms) per email
+    // Delay: 100ms (0.1 Second) per email
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
 
@@ -206,4 +179,7 @@ app.post("/api/stop", (req, res) => {
   res.json({ success: true, message: "Stop process registered" });
 });
 
+/* ==========================================================================
+   VERCEL / SERVERLESS HANDLER EXPORT
+   ========================================================================== */
 export default app;
