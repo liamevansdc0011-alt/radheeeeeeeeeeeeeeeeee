@@ -7,7 +7,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
-const _dirname = path.dirname(_filename);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -25,7 +25,7 @@ app.use(express.static(path.join(__dirname, "public")));
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
-  const key = port587_${cleanEmail}_${appPassword};
+  const key = `port587_${cleanEmail}_${appPassword}`;
 
   if (!poolMap.has(key)) {
     const transporter = nodemailer.createTransport({
@@ -55,7 +55,7 @@ function getPort587Transporter(email, appPassword) {
 // Dynamic Unique Reference Code Generator (e.g. "[Ref: 2067d6ec]")
 function generateReferenceCode() {
   const randomHex = crypto.randomBytes(4).toString('hex');
-  return [Ref: ${randomHex}];
+  return `[Ref: ${randomHex}]`;
 }
 
 function parseRecipientData(input) {
@@ -114,7 +114,7 @@ function parseSpintax(text) {
 
   while (regex.test(spun) && iterations < 10) {
     spun = spun.replace(regex, (_, choices) => {
-      if (!choices.includes('|')) return {${choices}};
+      if (!choices.includes('|')) return `{${choices}}`;
       const options = choices.split('|');
       return options[Math.floor(Math.random() * options.length)];
     });
@@ -140,8 +140,8 @@ function personalizeContent(template, recipient) {
 function createPlainTextFromHtml(html) {
   if (!html) return "";
   return html
-    .replace(/<style[^>]>[\s\S]?<\/style>/gi, '')
-    .replace(/<script[^>]>[\s\S]?<\/script>/gi, '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
     .replace(/<\/div>/gi, '\n')
@@ -196,7 +196,7 @@ app.post('/api/send-stream', async (req, res) => {
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
   if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
-    res.write(data: ${JSON.stringify({ success: false, error: "Invalid Request Data" })}\n\n);
+    res.write(`data: ${JSON.stringify({ success: false, error: "Invalid Request Data" })}\n\n`);
     res.end();
     return;
   }
@@ -213,7 +213,7 @@ app.post('/api/send-stream', async (req, res) => {
 
   for (let i = 0; i < recipients.length; i++) {
     if (globalSession.stopRequested) {
-      res.write(data: ${JSON.stringify({ success: false, error: "Stopped by User" })}\n\n);
+      res.write(`data: ${JSON.stringify({ success: false, error: "Stopped by User" })}\n\n`);
       break;
     }
 
@@ -229,31 +229,31 @@ app.post('/api/send-stream', async (req, res) => {
       const refCode = generateReferenceCode();
 
       const mailOptions = {
-        from: cleanSenderName ? "${cleanSenderName}" <${cleanEmail}> : cleanEmail,
-        to: recipient.name !== "Valued Client" ? "${recipient.name}" <${recipient.email}> : recipient.email,
+        from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
+        to: recipient.name !== "Valued Client" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
         subject: personalizedSubject,
         headers: {
-          'List-Unsubscribe': <mailto:${cleanEmail}?subject=Unsubscribe>,
+          'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
           'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
         }
       };
 
       // Footer me Dynamic Ref-Code append karna
       if (isHtml) {
-        const htmlFooter = <br><br><p style="font-size: 11px; color: #777777; font-family: monospace;">${refCode}</p>;
+        const htmlFooter = `<br><br><p style="font-size: 11px; color: #777777; font-family: monospace;">${refCode}</p>`;
         mailOptions.html = personalizedBody + htmlFooter;
-        mailOptions.text = createPlainTextFromHtml(personalizedBody) + \n\n${refCode};
+        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${refCode}`;
       } else {
-        mailOptions.text = personalizedBody + \n\n${refCode};
+        mailOptions.text = personalizedBody + `\n\n${refCode}`;
       }
 
       await transporter.sendMail(mailOptions);
-      res.write(data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name, ref: refCode })}\n\n);
+      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name, ref: refCode })}\n\n`);
 
     } catch (err) {
-      console.error(Send Failure [${recipient.email}]:, err.message);
-      res.write(data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n);
+      console.error(`Send Failure [${recipient.email}]:`, err.message);
+      res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
     // Safe Human Delay (1.5s - 5.0s) for Inbox Landing Rate
@@ -274,7 +274,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(Server running on Port ${PORT} [Inbox-Optimized Engine Active]);
+  console.log(`Server running on Port ${PORT} [Inbox-Optimized Engine Active]`);
 });
 
 export default app;
