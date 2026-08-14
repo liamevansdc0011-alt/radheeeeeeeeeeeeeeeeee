@@ -21,7 +21,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (TLS Socket Reuse)
+   TRANSPORTER POOLING
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -32,8 +32,8 @@ function getTransporter(email, appPassword) {
       service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 100
+      maxConnections: 1,
+      maxMessages: 50
     });
     transporters.set(cacheKey, transporter);
   }
@@ -41,7 +41,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   SPINTAX PARSER ({Hi|Hello|Hey})
+   SPINTAX PARSER
    ========================================================================== */
 function parseSpintax(text) {
   if (!text) return "";
@@ -59,7 +59,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -101,13 +101,13 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (STABLE & SECURE LOOP)
+   SSE STREAM ROUTE (FIXED 3 SECONDS DELAY)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Prevents proxy buffering on Vercel/Nginx
+  res.setHeader('X-Accel-Buffering', 'no');
 
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
@@ -131,7 +131,6 @@ app.post("/api/send-stream", async (req, res) => {
     const recipient = recipients[index] ? recipients[index].trim() : "";
     if (!recipient) continue;
 
-    // Connection keep-alive ping
     res.write(': keep-alive\n\n');
 
     try {
@@ -140,10 +139,18 @@ app.post("/api/send-stream", async (req, res) => {
       const spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
+      const domain = senderEmail.split('@')[1] || 'gmail.com';
+      const uniqueMessageId = `<${Date.now()}.${Math.random().toString(36).substring(2, 8)}@${domain}>`;
+
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject
+        subject: spunSubject,
+        headers: {
+          'X-Mailer': 'Nodemailer Express Engine',
+          'Message-ID': uniqueMessageId,
+          'X-Report-Abuse-To': senderEmail
+        }
       };
 
       if (isHtml) {
@@ -161,9 +168,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Delay: 100ms (0.1 Second) per email
+    // Delay: Exact 3 Seconds (3000ms) per email
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
   }
 
@@ -179,7 +186,4 @@ app.post("/api/stop", (req, res) => {
   res.json({ success: true, message: "Stop process registered" });
 });
 
-/* ==========================================================================
-   VERCEL / SERVERLESS HANDLER EXPORT
-   ========================================================================== */
 export default app;
