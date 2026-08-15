@@ -22,7 +22,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (MAXIMUM DELIVERABILITY CONFIG)
+   TRANSPORTER POOLING (MAXIMUM INBOX PLACEMENT)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -32,10 +32,10 @@ function getTransporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
-      secure: true, // SSL Direct Connection
+      secure: true,
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 5,
+      maxConnections: 3,
       maxMessages: 100,
       tls: {
         rejectUnauthorized: false,
@@ -66,7 +66,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK (Multipart MIME Compliance)
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -108,7 +108,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (INBOX OPTIMIZED ENGINE)
+   SSE STREAM ROUTE (INBOX ENGINE)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -146,35 +146,35 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Generate RFC-compliant Unique Identifiers
-      const randomHash = crypto.randomBytes(6).toString('hex').toUpperCase();
+      // Generate Unique Reference Codes & Headers
+      const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
       const timestamp = new Date().toUTCString();
-      const uniqueMsgId = `<${Date.now()}.${randomHash}@mail.gmail.com>`;
+      const domain = senderEmail.split('@')[1] || 'gmail.com';
+      const uniqueMsgId = `<${Date.now()}.${uniqueCode}@${domain}>`;
 
-      // Clean Unique Reference Footer
+      // Clean Unique Ref Code
       const footerHtml = `
         <br><br>
-        <div style="margin-top: 20px; padding-top: 10px; border-top: 1px solid #e0e0e0; font-size: 11px; color: #888888; font-family: Arial, sans-serif;">
-          Ref Code: <strong>#${randomHash}</strong> | Timestamp: ${timestamp}
+        <div style="margin-top: 15px; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: sans-serif;">
+          Ref No: <strong>#${uniqueCode}</strong> | Date: ${timestamp}
         </div>
       `;
 
-      const footerText = `\n\n---\nRef Code: #${randomHash} | Timestamp: ${timestamp}`;
+      const footerText = `\n\n---\nRef No: #${uniqueCode} | Date: ${timestamp}`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
         subject: spunSubject,
-        // Enterprise Anti-Spam Headers
+        priority: 'high',
+        // Enhanced Desktop Mailer Headers
         headers: {
           'Message-ID': uniqueMsgId,
-          'X-Mailer': 'Outlook Express 16.0',
-          'X-Priority': '3 (Normal)',
-          'X-MSMail-Priority': 'Normal',
-          'Importance': 'Normal',
-          'X-Entity-Ref-ID': randomHash,
-          'X-Originating-IP': '[127.0.0.1]',
-          'MIME-Version': '1.0'
+          'X-Mailer': 'Mozilla Thunderbird 115.0',
+          'X-Priority': '3',
+          'X-Entity-Ref-ID': uniqueCode,
+          'X-Report-Abuse-To': senderEmail,
+          'Content-Transfer-Encoding': '7bit'
         }
       };
 
@@ -186,14 +186,14 @@ app.post("/api/send-stream", async (req, res) => {
       }
 
       await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient, code: randomHash })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient, code: uniqueCode })}\n\n`);
 
     } catch (error) {
       console.error(`Error sending to ${recipient}:`, error.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Fixed Delay (400ms)
+    // Fixed Speed Delay (400ms)
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 400));
     }
