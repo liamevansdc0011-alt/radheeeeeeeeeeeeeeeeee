@@ -2,11 +2,11 @@
   "name": "email-sender-engine",
   "version": "1.0.0",
   "description": "Express and Nodemailer streaming email backend",
-  "main": "index.js",
+  "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
