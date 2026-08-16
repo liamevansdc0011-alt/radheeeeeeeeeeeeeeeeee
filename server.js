@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-
+const PORT = process.env.PORT || 3000;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '##';
 
 // Express Middleware Setup
@@ -22,7 +22,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (INBOX OPTIMIZED TLS & SOCKET REUSE)
+   TRANSPORTER POOLING (STANDARD STABLE SMTP)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -30,15 +30,13 @@ function getTransporter(email, appPassword) {
 
   if (!transporters.has(cacheKey)) {
     const transporter = nodemailer.createTransport({
-      service: "gmail",
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 100,
-      tls: {
-        rejectUnauthorized: false,
-        ciphers: 'SSLv3'
-      }
+      maxConnections: 1, // Rate-limit prevent karne ke liye stable single connection
+      maxMessages: 50
     });
     transporters.set(cacheKey, transporter);
   }
@@ -64,7 +62,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -106,7 +104,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
+   SSE STREAM ROUTE
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -144,13 +142,10 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Generate Unique Reference ID & Timestamp Footer
+      // Aapka Original Reference ID & Date Footer
       const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
       const timestamp = new Date().toUTCString();
-      const domain = senderEmail.split('@')[1] || 'gmail.com';
-      const uniqueMessageId = `<${Date.now()}.${uniqueCode}@${domain}>`;
 
-      // Clean Footer (Only Reference Code & Timestamp)
       const footerHtml = `
         <br><br>
         <div style="margin-top: 15px; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: sans-serif;">
@@ -163,16 +158,7 @@ app.post("/api/send-stream", async (req, res) => {
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject,
-        priority: 'high',
-        // Anti-Spam Headers (Unsubscribe Removed)
-        headers: {
-          'Message-ID': uniqueMessageId,
-          'X-Mailer': 'Microsoft Outlook 16.0',
-          'X-Priority': '3',
-          'X-Entity-Ref-ID': uniqueCode,
-          'X-Report-Abuse-To': senderEmail
-        }
+        subject: spunSubject
       };
 
       if (isHtml) {
@@ -190,9 +176,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Exact Speed Delay (400ms)
+    // Recommended Throttle Delay (2 seconds) to avoid Google Rate Limit
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 400));
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
   }
 
