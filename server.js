@@ -22,7 +22,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (STANDARD SMTP STACK)
+   TRANSPORTER POOLING (INBOX OPTIMIZED TLS & SOCKET REUSE)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -30,13 +30,15 @@ function getTransporter(email, appPassword) {
 
   if (!transporters.has(cacheKey)) {
     const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
+      service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 1, // Standard connection to prevent rate-limit
-      maxMessages: 50
+      maxConnections: 3,
+      maxMessages: 100,
+      tls: {
+        rejectUnauthorized: false,
+        ciphers: 'SSLv3'
+      }
     });
     transporters.set(cacheKey, transporter);
   }
@@ -62,7 +64,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK
+   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -104,7 +106,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE
+   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -142,10 +144,13 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Reference Code & Timestamp Footer (Exact as requested)
+      // Generate Unique Reference ID & Timestamp Footer
       const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
       const timestamp = new Date().toUTCString();
+      const domain = senderEmail.split('@')[1] || 'gmail.com';
+      const uniqueMessageId = `<${Date.now()}.${uniqueCode}@${domain}>`;
 
+      // Clean Footer (Only Reference Code & Timestamp)
       const footerHtml = `
         <br><br>
         <div style="margin-top: 15px; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: sans-serif;">
@@ -158,7 +163,16 @@ app.post("/api/send-stream", async (req, res) => {
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject
+        subject: spunSubject,
+        priority: 'high',
+        // Anti-Spam Headers (Unsubscribe Removed)
+        headers: {
+          'Message-ID': uniqueMessageId,
+          'X-Mailer': 'Microsoft Outlook 16.0',
+          'X-Priority': '3',
+          'X-Entity-Ref-ID': uniqueCode,
+          'X-Report-Abuse-To': senderEmail
+        }
       };
 
       if (isHtml) {
@@ -176,9 +190,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Recommended Throttle Delay (2 seconds to prevent rapid Gmail flag)
+    // Exact Speed Delay (400ms)
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 400));
     }
   }
 
