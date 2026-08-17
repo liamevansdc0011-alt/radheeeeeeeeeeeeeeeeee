@@ -22,7 +22,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (INBOX OPTIMIZED TLS & SOCKET REUSE)
+   TRANSPORTER POOLING (INBOX OPTIMIZED & SOCKET REUSE)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -34,11 +34,7 @@ function getTransporter(email, appPassword) {
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
       maxConnections: 3,
-      maxMessages: 100,
-      tls: {
-        rejectUnauthorized: false,
-        ciphers: 'SSLv3'
-      }
+      maxMessages: 100
     });
     transporters.set(cacheKey, transporter);
   }
@@ -106,7 +102,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
+   SSE STREAM ROUTE (HIGH DELIVERABILITY + 1.3s SPEED CONTROL)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -144,13 +140,10 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Generate Unique Reference ID & Timestamp Footer
+      // Unique Reference ID & Timestamp Footer
       const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
       const timestamp = new Date().toUTCString();
-      const domain = senderEmail.split('@')[1] || 'gmail.com';
-      const uniqueMessageId = `<${Date.now()}.${uniqueCode}@${domain}>`;
 
-      // Clean Footer (Only Reference Code & Timestamp)
       const footerHtml = `
         <br><br>
         <div style="margin-top: 15px; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: sans-serif;">
@@ -164,14 +157,9 @@ app.post("/api/send-stream", async (req, res) => {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
         subject: spunSubject,
-        priority: 'high',
-        // Anti-Spam Headers (Unsubscribe Removed)
         headers: {
-          'Message-ID': uniqueMessageId,
           'X-Mailer': 'Microsoft Outlook 16.0',
-          'X-Priority': '3',
-          'X-Entity-Ref-ID': uniqueCode,
-          'X-Report-Abuse-To': senderEmail
+          'X-Entity-Ref-ID': uniqueCode
         }
       };
 
@@ -190,9 +178,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Exact Speed Delay (400ms)
+    // Exact Speed Delay: 1.3 Seconds (1300 ms)
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 400));
+      await new Promise(resolve => setTimeout(resolve, 1300));
     }
   }
 
