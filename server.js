@@ -4,16 +4,14 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '##';
 
-// Express Middleware Setup
+// Middleware
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -22,7 +20,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (INBOX OPTIMIZED TLS & SOCKET REUSE)
+   TRANSPORTER POOLING (CLEAN NATIVE GMAIL SSL)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -33,12 +31,8 @@ function getTransporter(email, appPassword) {
       service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 100,
-      tls: {
-        rejectUnauthorized: false,
-        ciphers: 'SSLv3'
-      }
+      maxConnections: 2,
+      maxMessages: 50
     });
     transporters.set(cacheKey, transporter);
   }
@@ -64,7 +58,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -106,7 +100,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (INBOX HIGH DELIVERABILITY)
+   SSE STREAM ROUTE (HIGH INBOX LANDING)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -144,55 +138,43 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Generate Unique Reference ID & Timestamp Footer
-      const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
-      const timestamp = new Date().toUTCString();
-      const domain = senderEmail.split('@')[1] || 'gmail.com';
-      const uniqueMessageId = `<${Date.now()}.${uniqueCode}@${domain}>`;
-
-      // Clean Footer (Only Reference Code & Timestamp)
-      const footerHtml = `
+      // Clean Professional Sign-off Footer (No Ref Code / No Spam Bot Strings)
+      const cleanFooterHtml = `
         <br><br>
-        <div style="margin-top: 15px; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: sans-serif;">
-          Ref No: <strong>#${uniqueCode}</strong> | Date: ${timestamp}
+        <div style="font-size: 12px; color: #718096; font-family: Arial, sans-serif; line-height: 1.4;">
+          <p style="margin: 0;">Best regards,</p>
+          <p style="margin: 2px 0 0 0; font-weight: bold; color: #2d3748;">${cleanSenderName || senderEmail.split('@')[0]}</p>
         </div>
       `;
 
-      const footerText = `\n\n---\nRef No: #${uniqueCode} | Date: ${timestamp}`;
+      const cleanFooterText = `\n\nBest regards,\n${cleanSenderName || senderEmail.split('@')[0]}`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject,
-        priority: 'high',
-        // Anti-Spam Headers (Unsubscribe Removed)
-        headers: {
-          'Message-ID': uniqueMessageId,
-          'X-Mailer': 'Microsoft Outlook 16.0',
-          'X-Priority': '3',
-          'X-Entity-Ref-ID': uniqueCode,
-          'X-Report-Abuse-To': senderEmail
-        }
+        subject: spunSubject
       };
 
       if (isHtml) {
-        mailOptions.html = spunBody + footerHtml;
-        mailOptions.text = convertHtmlToText(spunBody) + footerText;
+        mailOptions.html = spunBody + cleanFooterHtml;
+        mailOptions.text = convertHtmlToText(spunBody) + cleanFooterText;
       } else {
-        mailOptions.text = spunBody + footerText;
+        mailOptions.text = spunBody + cleanFooterText;
       }
 
+      // Send Mail natively (Gmail auto-attaches valid DKIM & Message-ID)
       await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient, code: uniqueCode })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient })}\n\n`);
 
     } catch (error) {
       console.error(`Error sending to ${recipient}:`, error.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Exact Speed Delay (400ms)
+    // Dynamic Human-like Delay (2.2s - 3.5s) to bypass Gmail Bot Detection
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 400));
+      const randomDelay = Math.floor(Math.random() * 1300) + 2200;
+      await new Promise(resolve => setTimeout(resolve, randomDelay));
     }
   }
 
