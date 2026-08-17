@@ -10,51 +10,40 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const SITE_PASSWORD = process.env.SITE_PASSWORD || 'admin123';
 
+const SITE_PASSWORD = process.env.SITE_PASSWORD || '##';
+
+// Express Middleware Setup
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const activeSessions = {};
-const transporterCache = new Map();
+const transporters = new Map();
 
 /* ==========================================================================
-   1. POLYMORPHIC ANTI-FINGERPRINTING (ZERO-WIDTH NOISE INJECTOR)
+   TRANSPORTER POOLING (Standard Secure SMTP Setup)
    ========================================================================== */
-function injectPolymorphicNoise(content) {
-  if (!content) return "";
-  const zeroWidthChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
-  
-  return content.replace(/(<p[^>]*>|<div[^>]*>|<br\s*\/?>|\n)/gi, (match) => {
-    const randomCount = Math.floor(Math.random() * 4) + 1;
-    let noise = '';
-    for (let i = 0; i < randomCount; i++) {
-      noise += zeroWidthChars[Math.floor(Math.random() * zeroWidthChars.length)];
-    }
-    return match + noise;
-  });
-}
+function getTransporter(email, appPassword) {
+  const cleanEmail = email.toLowerCase().trim();
+  const cacheKey = `${cleanEmail}_${appPassword}`;
 
-/* ==========================================================================
-   2. RECIPIENT DYNAMIC TEMPLATE PARSER
-   ========================================================================== */
-function parseRecipientVars(template, recipientObj) {
-  if (!template) return "";
-  let parsed = template;
-  
-  if (typeof recipientObj === 'object') {
-    Object.keys(recipientObj).forEach(key => {
-      const reg = new RegExp(`{{\\s*${key}\\s*}}`, 'gi');
-      parsed = parsed.replace(reg, recipientObj[key] || '');
+  if (!transporters.has(cacheKey)) {
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user: cleanEmail, pass: appPassword },
+      pool: true,
+      maxConnections: 1, // Reduced to prevent Gmail socket threshold flags
+      maxMessages: 50,
+      rateLimit: 1
     });
+    transporters.set(cacheKey, transporter);
   }
-  return parsed;
+  return transporters.get(cacheKey);
 }
 
 /* ==========================================================================
-   3. SPINTAX ENGINE
+   SPINTAX PARSER ({Hi|Hello|Hey})
    ========================================================================== */
 function parseSpintax(text) {
   if (!text) return "";
@@ -72,59 +61,49 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   4. TRANSPORTER POOL MANAGER
+   HTML TO PLAIN-TEXT FALLBACK (Multipart Email)
    ========================================================================== */
-function getTransporter(email, appPassword) {
-  const cleanEmail = email.toLowerCase().trim();
-  const cacheKey = `${cleanEmail}_${appPassword.trim()}`;
-
-  if (!transporterCache.has(cacheKey)) {
-    const transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      pool: true,
-      maxConnections: 1,
-      maxMessages: 100,
-      rateLimit: 1,
-      auth: { user: cleanEmail, pass: appPassword.trim() },
-      tls: { rejectUnauthorized: true }
-    });
-    transporterCache.set(cacheKey, transporter);
-  }
-  return transporterCache.get(cacheKey);
+function convertHtmlToText(html) {
+  if (!html) return "";
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\n\s*\n/g, '\n\n')
+    .trim();
 }
 
 /* ==========================================================================
-   5. AUTHENTICATION & VERIFICATION ENDPOINTS
+   AUTHENTICATION ROUTES
    ========================================================================== */
 app.post("/api/auth", (req, res) => {
   const { password } = req.body;
   if (password === SITE_PASSWORD) return res.json({ success: true });
-  return res.status(401).json({ success: false, message: "Unauthorized access" });
+  return res.status(401).json({ success: false, message: "Incorrect password" });
 });
 
-app.post("/api/verify-accounts", async (req, res) => {
-  const { accounts } = req.body; // Array of { email, appPassword }
-  if (!Array.isArray(accounts) || accounts.length === 0) {
-    return res.status(400).json({ success: false, message: "Accounts array required" });
-  }
+app.post("/api/verify", async (req, res) => {
+  const { email, appPassword } = req.body;
+  if (!email || !appPassword) return res.status(400).json({ success: false, message: "Credentials required" });
 
-  const results = [];
-  for (const acc of accounts) {
-    try {
-      const transporter = getTransporter(acc.email, acc.appPassword);
-      await transporter.verify();
-      results.push({ email: acc.email, status: 'valid' });
-    } catch (err) {
-      results.push({ email: acc.email, status: 'failed', error: err.message });
-    }
+  try {
+    const transporter = getTransporter(email, appPassword);
+    await transporter.verify();
+    return res.json({ success: true, message: "SMTP verified successfully" });
+  } catch (error) {
+    return res.status(401).json({ success: false, message: "Authentication failed. Check App Password." });
   }
-  return res.json({ success: true, results });
 });
 
 /* ==========================================================================
-   6. ENTERPRISE STREAM ENGINE (MULTI-ACCOUNT ROTATION & SSE)
+   SSE STREAM ROUTE (Optimized For Deliverability)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -132,102 +111,63 @@ app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
 
-  const { accounts, senderName, subject, messageBody, recipients } = req.body;
+  const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
-  if (!Array.isArray(accounts) || accounts.length === 0 || !Array.isArray(recipients) || recipients.length === 0) {
-    res.write(`data: ${JSON.stringify({ success: false, error: "Invalid payload parameters" })}\n\n`);
+  if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
+    res.write(`data: ${JSON.stringify({ success: false, error: "Missing required fields" })}\n\n`);
     res.end();
     return;
   }
 
+  const senderEmail = email.toLowerCase().trim();
+  const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
+
   activeSessions['global_stop'] = false;
-  let accountIndex = 0;
 
   for (let index = 0; index < recipients.length; index++) {
     if (activeSessions['global_stop']) {
-      res.write(`data: ${JSON.stringify({ success: false, error: "Task terminated by user" })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: false, error: "Stopped by user" })}\n\n`);
       break;
     }
 
-    const item = recipients[index];
-    const recipientEmail = (typeof item === 'string' ? item : item.email || "").trim();
-    if (!recipientEmail) continue;
-
-    // ROTATE ACCOUNTS ROUND-ROBIN
-    const currentAccount = accounts[accountIndex % accounts.length];
-    accountIndex++;
+    const recipient = recipients[index] ? recipients[index].trim() : "";
+    if (!recipient) continue;
 
     res.write(': keep-alive\n\n');
 
     try {
-      const transporter = getTransporter(currentAccount.email, currentAccount.appPassword);
-      
-      // 1. Spintax Processing
-      let processedSubject = parseSpintax(subject);
-      let processedBody = parseSpintax(messageBody);
+      const transporter = getTransporter(email, appPassword);
+      const spunSubject = parseSpintax(subject);
+      let spunBody = parseSpintax(messageBody);
+      const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // 2. Variable Substitution (e.g., {{Name}})
-      if (typeof item === 'object') {
-        processedSubject = parseRecipientVars(processedSubject, item);
-        processedBody = parseRecipientVars(processedBody, item);
-      }
-
-      // 3. Inject Invisible Polymorphic Noise to bypass duplicate content filters
-      processedBody = injectPolymorphicNoise(processedBody);
-
-      const uniqueRef = crypto.randomBytes(4).toString('hex').toUpperCase();
-      const domain = currentAccount.email.split('@')[1] || 'gmail.com';
-      const customMessageId = `<${Date.now()}.${uniqueRef}@${domain}>`;
-      const timeStamp = new Date().toUTCString();
-
-      const footerHtml = `
-        <div style="margin-top: 25px; padding-top: 10px; border-top: 1px solid #edf2f7; font-size: 11px; color: #718096; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-          Security Verification Code: <strong>${uniqueRef}</strong> | Stamp: ${timeStamp}
-        </div>
-      `;
-
-      const cleanSenderName = (senderName || "").replace(/["\r\n]/g, "").trim();
+      const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
 
       const mailOptions = {
-        from: cleanSenderName ? `"${cleanSenderName}" <${currentAccount.email}>` : currentAccount.email,
-        replyTo: currentAccount.email,
-        to: recipientEmail,
-        subject: processedSubject,
-        html: processedBody + footerHtml,
-        messageId: customMessageId,
-        headers: {
-          'X-Entity-Ref-ID': uniqueRef,
-          'X-Mailer': 'SecureMailConsole/2.0',
-          'List-Unsubscribe': `<mailto:${currentAccount.email}?subject=unsubscribe>`,
-          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-          'X-Report-Abuse-To': `<mailto:${currentAccount.email}>`
-        }
+        from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
+        to: recipient,
+        subject: spunSubject
       };
 
-      await transporter.sendMail(mailOptions);
+      if (isHtml) {
+        mailOptions.html = spunBody;
+        mailOptions.text = convertHtmlToText(spunBody);
+      } else {
+        mailOptions.text = spunBody;
+      }
 
-      res.write(`data: ${JSON.stringify({
-        success: true,
-        recipient: recipientEmail,
-        code: uniqueRef,
-        sentFrom: currentAccount.email,
-        progress: `${index + 1}/${recipients.length}`
-      })}\n\n`);
+      await transporter.sendMail(mailOptions);
+      res.write(`data: ${JSON.stringify({ success: true, recipient, code: uniqueCode })}\n\n`);
 
     } catch (error) {
-      console.error(`Failed sending to ${recipientEmail} via ${currentAccount.email}:`, error.message);
-      res.write(`data: ${JSON.stringify({
-        success: false,
-        recipient: recipientEmail,
-        sentFrom: currentAccount.email,
-        error: error.message
-      })}\n\n`);
+      console.error(`Error sending to ${recipient}:`, error.message);
+      res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Dynamic Humanized Delay (4 to 8 Seconds)
+    // Dynamic Safe Delay (2500ms to 4500ms random delay per email)
     if (index < recipients.length - 1) {
-      const delay = Math.floor(Math.random() * 4000) + 4000;
-      await new Promise(resolve => setTimeout(resolve, delay));
+      const randomDelay = Math.floor(Math.random() * 2000) + 2500;
+      await new Promise(resolve => setTimeout(resolve, randomDelay));
     }
   }
 
@@ -235,9 +175,12 @@ app.post("/api/send-stream", async (req, res) => {
   res.end();
 });
 
+/* ==========================================================================
+   STOP ROUTE
+   ========================================================================== */
 app.post("/api/stop", (req, res) => {
   activeSessions['global_stop'] = true;
-  res.json({ success: true, message: "Broadcast stop signal received" });
+  res.json({ success: true, message: "Stop process registered" });
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+export default app;
