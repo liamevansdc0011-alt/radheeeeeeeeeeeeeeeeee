@@ -22,20 +22,35 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (REUSE & TIMEOUT HANDLING)
+   HUMAN SIMULATION DELAY (5-9 SECONDS RANDOM JITTER)
+   ========================================================================== */
+const getRandomDelay = (min = 5000, max = 9000) => {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+};
+
+/* ==========================================================================
+   TRANSPORTER POOLING (OPTIMIZED FOR INBOX DELIVERY)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
-  const cacheKey = `${cleanEmail}_${appPassword}`;
+  const cacheKey = `${cleanEmail}_${appPassword.trim()}`;
 
   if (!transporters.has(cacheKey)) {
     const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: cleanEmail, pass: appPassword },
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true, // SSL
       pool: true,
-      maxConnections: 2,
-      maxMessages: 50,
-      rateLimit: 1 // Rate limit per connection to prevent Gmail throttling
+      maxConnections: 1, // Single active stream per account to prevent Gmail throttling
+      maxMessages: 100,
+      rateLimit: 1, // Max 1 mail per second connection limit
+      auth: {
+        user: cleanEmail,
+        pass: appPassword.trim()
+      },
+      tls: {
+        rejectUnauthorized: true
+      }
     });
     transporters.set(cacheKey, transporter);
   }
@@ -103,7 +118,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (EMAIL SENDING ENGINE)
+   SSE STREAM ROUTE (INBOX OPTIMIZED ENGINE)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -120,7 +135,7 @@ app.post("/api/send-stream", async (req, res) => {
   }
 
   const senderEmail = email.toLowerCase().trim();
-  const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
+  const cleanSenderName = (senderName || "").replace(/["\r\n]/g, "").trim();
 
   activeSessions['global_stop'] = false;
 
@@ -142,23 +157,31 @@ app.post("/api/send-stream", async (req, res) => {
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
       const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+      const messageIdDomain = senderEmail.split('@')[1] || 'gmail.com';
+      const customMessageId = `<${Date.now()}.${uniqueCode}@${messageIdDomain}>`;
       const timestamp = new Date().toUTCString();
 
       const footerHtml = `
         <br><br>
-        <div style="margin-top: 15px; padding-top: 8px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: sans-serif;">
-          Ref No: <strong>#${uniqueCode}</strong> | Date: ${timestamp}
+        <div style="margin-top: 20px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; font-family: Arial, sans-serif;">
+          Reference ID: <strong>#${uniqueCode}</strong> | Sent: ${timestamp}
         </div>
       `;
 
-      const footerText = `\n\n---\nRef No: #${uniqueCode} | Date: ${timestamp}`;
+      const footerText = `\n\n---\nReference ID: #${uniqueCode} | Sent: ${timestamp}`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
+        replyTo: senderEmail,
         to: recipient,
         subject: spunSubject,
+        messageId: customMessageId,
         headers: {
-          'X-Entity-Ref-ID': uniqueCode
+          'X-Entity-Ref-ID': uniqueCode,
+          'X-Mailer': 'Node.js FastMailer / Nodemailer',
+          'List-Unsubscribe': `<mailto:${senderEmail}?subject=unsubscribe>`,
+          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+          'X-Report-Abuse-To': `<mailto:${senderEmail}>`
         }
       };
 
@@ -177,9 +200,10 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Delay handling (3 to 5 seconds per mail is recommended for personal Gmail SMTP)
+    // Dynamic Human-like Delay (5 to 9 Seconds) between emails
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      const delay = getRandomDelay(5000, 9000);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 
