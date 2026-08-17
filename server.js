@@ -22,7 +22,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (INBOX OPTIMIZED & SOCKET REUSE)
+   TRANSPORTER POOLING (REUSE & TIMEOUT HANDLING)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -33,8 +33,9 @@ function getTransporter(email, appPassword) {
       service: "gmail",
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 100
+      maxConnections: 2,
+      maxMessages: 50,
+      rateLimit: 1 // Rate limit per connection to prevent Gmail throttling
     });
     transporters.set(cacheKey, transporter);
   }
@@ -60,7 +61,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK (Dual Multipart MIME)
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -102,7 +103,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (HIGH DELIVERABILITY + 1.3s SPEED CONTROL)
+   SSE STREAM ROUTE (EMAIL SENDING ENGINE)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -140,7 +141,6 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Unique Reference ID & Timestamp Footer
       const uniqueCode = crypto.randomBytes(4).toString('hex').toUpperCase();
       const timestamp = new Date().toUTCString();
 
@@ -158,7 +158,6 @@ app.post("/api/send-stream", async (req, res) => {
         to: recipient,
         subject: spunSubject,
         headers: {
-          'X-Mailer': 'Microsoft Outlook 16.0',
           'X-Entity-Ref-ID': uniqueCode
         }
       };
@@ -178,9 +177,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Exact Speed Delay: 1.3 Seconds (1300 ms)
+    // Delay handling (3 to 5 seconds per mail is recommended for personal Gmail SMTP)
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1300));
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
   }
 
