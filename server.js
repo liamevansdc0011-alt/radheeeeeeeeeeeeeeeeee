@@ -13,99 +13,41 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 
-const globalSession = { stopRequested: false };
-const poolMap = new Map();
+const activeSession = { stop: false };
+const transporterCache = new Map();
 
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SECURE SMTP TRANSPORTER (TLS Port 587 - Standard Connection)
+   1. GMAIL SECURE TRANSPORTER (Clean Credentials & Socket Pooling)
    ========================================================================== */
-function getPort587Transporter(email, appPassword) {
+function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
-  const key = `port587_${cleanEmail}_${appPassword}`;
+  const key = `${cleanEmail}_${appPassword}`;
 
-  if (!poolMap.has(key)) {
+  if (!transporterCache.has(key)) {
     const transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false, // STARTTLS
-      requireTLS: true,
+      service: 'gmail',
       auth: {
         user: cleanEmail,
         pass: appPassword
       },
       pool: true,
-      maxConnections: 1, // Safe socket reuse for Gmail limit
-      maxMessages: 100
+      maxConnections: 1,
+      maxMessages: 50
     });
 
-    poolMap.set(key, transporter);
+    transporterCache.set(key, transporter);
   }
 
-  return poolMap.get(key);
+  return transporterCache.get(key);
 }
 
 /* ==========================================================================
-   2. RECIPIENT PARSER, SPINTAX & REF-CODE GENERATOR
+   2. SPINTAX & PERSONALIZATION ENGINE
    ========================================================================== */
-
-// Unique Reference Code Generator (Har mail ke niche uniquely jayega)
-function generateReferenceCode() {
-  const randomHex = crypto.randomBytes(4).toString('hex').toUpperCase();
-  return `[Ref: ${randomHex}]`;
-}
-
-function parseRecipientData(input) {
-  let email = "";
-  let rawName = "";
-
-  if (typeof input === 'object' && input !== null) {
-    email = (input.email || input.recipient || "").trim();
-    rawName = (input.name || input.fullName || input.first_name || "").trim();
-  } else if (typeof input === 'string') {
-    const str = input.trim();
-    const angleMatch = str.match(/^(?:"?([^"]*)"?\s)?<([^>]+)>$/);
-    if (angleMatch) {
-      rawName = angleMatch[1] ? angleMatch[1].trim() : "";
-      email = angleMatch[2].trim();
-    } else if (str.includes(',')) {
-      const parts = str.split(',');
-      if (parts[0].includes('@')) {
-        email = parts[0].trim();
-        rawName = parts[1].trim();
-      } else {
-        rawName = parts[0].trim();
-        email = parts[1].trim();
-      }
-    } else {
-      email = str;
-    }
-  }
-
-  if (!rawName && email.includes('@')) {
-    const prefix = email.split('@')[0];
-    rawName = prefix.replace(/[0-9_.-]/g, ' ').trim();
-  }
-
-  const formattedName = rawName
-    ? rawName.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
-    : "Valued Client";
-
-  const firstName = formattedName.split(' ')[0] || "Client";
-  const domain = email.includes('@') ? email.split('@')[1] : "";
-
-  return {
-    email: email.toLowerCase(),
-    name: formattedName,
-    firstName: firstName,
-    domain: domain
-  };
-}
-
-// Spintax Parsing ({Hi|Hello|Hey})
 function parseSpintax(text) {
   if (!text) return "";
   let spun = text;
@@ -123,159 +65,159 @@ function parseSpintax(text) {
   return spun;
 }
 
-function personalizeContent(template, recipient) {
-  if (!template) return "";
-  let content = parseSpintax(template);
+function processRecipient(raw) {
+  let email = "";
+  let name = "";
 
+  if (typeof raw === 'object' && raw !== null) {
+    email = (raw.email || raw.recipient || "").trim();
+    name = (raw.name || raw.fullName || "").trim();
+  } else if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    const match = trimmed.match(/^(?:"?([^"]*)"?\s)?<([^>]+)>$/);
+    if (match) {
+      name = match[1] ? match[1].trim() : "";
+      email = match[2].trim();
+    } else {
+      email = trimmed;
+    }
+  }
+
+  if (!name && email.includes('@')) {
+    const part = email.split('@')[0];
+    name = part.replace(/[0-9_.-]/g, ' ').trim();
+  }
+
+  const formattedName = name
+    ? name.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+    : "Valued Client";
+
+  return {
+    email: email.toLowerCase(),
+    name: formattedName,
+    firstName: formattedName.split(' ')[0] || "Client"
+  };
+}
+
+function generateRefCode() {
+  return crypto.randomBytes(3).toString('hex').toUpperCase();
+}
+
+function buildBody(template, recipient, refCode) {
+  let content = parseSpintax(template);
   content = content.replace(/{Name}/gi, recipient.name);
   content = content.replace(/{FirstName}/gi, recipient.firstName);
-  content = content.replace(/{First_Name}/gi, recipient.firstName);
   content = content.replace(/{Email}/gi, recipient.email);
-  content = content.replace(/{Domain}/gi, recipient.domain);
 
-  return content;
-}
+  const isHtml = /<[a-z][\s\S]*>/i.test(content);
 
-// Automatic Plain Text Fallback Generator
-function createPlainTextFromHtml(html) {
-  if (!html) return "";
-  return html
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/\n\s*\n/g, '\n\n')
-    .trim();
+  const footerHtml = `<br><br><p style="color:#777777;font-size:11px;font-family:sans-serif;margin-top:20px;border-top:1px solid #eeeeee;padding-top:10px;">Ref ID: #${refCode}</p>`;
+  const footerText = `\n\n---\nRef ID: #${refCode}`;
+
+  if (isHtml) {
+    const plainText = content.replace(/<[^>]*>/g, '').trim();
+    return {
+      html: content + footerHtml,
+      text: plainText + footerText
+    };
+  }
+
+  return {
+    text: content + footerText
+  };
 }
 
 /* ==========================================================================
-   3. API ROUTES
+   3. ROUTES
    ========================================================================== */
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
 app.post('/api/auth', (req, res) => {
   const { password } = req.body;
-  if (password === SITE_PASSWORD) {
-    return res.json({ success: true, message: "Authorized" });
-  }
-  return res.status(401).json({ success: false, message: "Unauthorized Password" });
+  if (password === SITE_PASSWORD) return res.json({ success: true });
+  return res.status(401).json({ success: false, message: "Unauthorized" });
 });
 
-app.post("/api/verify", async (req, res) => {
+app.post('/api/verify', async (req, res) => {
   const { email, appPassword } = req.body;
-  if (!email || !appPassword) {
-    return res.status(400).json({ success: false, message: "Credentials required" });
-  }
+  if (!email || !appPassword) return res.status(400).json({ success: false, message: "Missing fields" });
 
   try {
-    const transporter = getPort587Transporter(email, appPassword);
+    const transporter = getTransporter(email, appPassword);
     await transporter.verify();
-    return res.json({ success: true, message: "SMTP verified successfully" });
+    return res.json({ success: true, message: "SMTP Connected" });
   } catch (error) {
-    return res.status(401).json({ success: false, message: "SMTP Auth Failed. Verify App Password." });
+    return res.status(401).json({ success: false, message: error.message });
   }
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Dynamic Ref-Code + Exact 1.2s Speed Rate Control)
+   4. STREAM ENGINE (Dynamic Human Delays: 2.1s - 4.8s)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
 
   const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
   if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
-    res.write(`data: ${JSON.stringify({ success: false, error: "Invalid Request Data" })}\n\n`);
+    res.write(`data: ${JSON.stringify({ success: false, error: "Invalid Request" })}\n\n`);
     res.end();
     return;
   }
 
   const cleanEmail = email.toLowerCase().trim();
-  const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
-  globalSession.stopRequested = false;
+  const cleanSender = (senderName || "").replace(/"/g, "").trim();
+  activeSession.stop = false;
 
-  const keepAlivePing = setInterval(() => {
-    res.write(': keep-alive\n\n');
-  }, 4000);
-
-  const transporter = getPort587Transporter(email, appPassword);
+  const transporter = getTransporter(email, appPassword);
 
   for (let i = 0; i < recipients.length; i++) {
-    if (globalSession.stopRequested) {
-      res.write(`data: ${JSON.stringify({ success: false, error: "Stopped by User" })}\n\n`);
+    if (activeSession.stop) {
+      res.write(`data: ${JSON.stringify({ success: false, error: "Stopped" })}\n\n`);
       break;
     }
 
-    const recipient = parseRecipientData(recipients[i]);
+    const recipient = processRecipient(recipients[i]);
     if (!recipient.email) continue;
 
     try {
-      const personalizedSubject = personalizeContent(subject, recipient);
-      const personalizedBody = personalizeContent(messageBody, recipient);
-      const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
-
-      // Unique Reference Code generated for each email
-      const refCode = generateReferenceCode();
+      const refCode = generateRefCode();
+      const spunSubject = parseSpintax(subject);
+      const bodies = buildBody(messageBody, recipient, refCode);
 
       const mailOptions = {
-        from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
+        from: cleanSender ? `"${cleanSender}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name !== "Valued Client" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
-        replyTo: cleanEmail,
-        subject: personalizedSubject,
-        headers: {
-          'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
-          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
-        }
+        subject: spunSubject,
+        text: bodies.text,
+        html: bodies.html || undefined
       };
 
-      // Append Reference Code to template footer
-      if (isHtml) {
-        const htmlFooter = `<br><br><div style="margin-top: 10px; padding-top: 5px; border-top: 1px solid #eeeeee; font-size: 11px; color: #888888; font-family: monospace;">Ref Code: ${refCode}</div>`;
-        mailOptions.html = personalizedBody + htmlFooter;
-        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\nRef Code: ${refCode}`;
-      } else {
-        mailOptions.text = personalizedBody + `\n\nRef Code: ${refCode}`;
-      }
-
       await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name, ref: refCode })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, ref: refCode })}\n\n`);
 
     } catch (err) {
-      console.error(`Send Failure [${recipient.email}]:`, err.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Exact Speed Rate: 1.2 Seconds (1200 ms)
+    // Dynamic Safe Delay (2.1 seconds to 4.8 seconds per email)
     if (i < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      const safeDelay = Math.floor(2100 + Math.random() * 2700);
+      await new Promise(resolve => setTimeout(resolve, safeDelay));
     }
   }
 
-  clearInterval(keepAlivePing);
   res.write("data: [DONE]\n\n");
   res.end();
 });
 
 app.post('/api/stop', (req, res) => {
-  globalSession.stopRequested = true;
-  res.json({ success: true, message: "Sending process stopped" });
+  activeSession.stop = true;
+  res.json({ success: true, message: "Stopping send process..." });
 });
 
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`Server running on Port ${PORT}`);
-  });
-}
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
 
 export default app;
