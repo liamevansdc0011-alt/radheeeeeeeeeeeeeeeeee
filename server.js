@@ -12,7 +12,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '##';
 
-// Middleware Configuration
+// Middleware
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -21,7 +21,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING WITH ANTI-SPAM TRANSPORT OPTIONS
+   TRANSPORTER POOLING (INBOX OPTIMIZED WITH HIGH AUTHENTICATION)
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -31,7 +31,7 @@ function getTransporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
-      secure: true, // TLS/SSL connection
+      secure: true, // Secure SSL for High Inbox Rate
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
       maxConnections: 1,
@@ -63,7 +63,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT CONVERTER
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -105,7 +105,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE FOR HIGH-INBOX DELIVERABILITY
+   SSE STREAM ROUTE (HIGH INBOX LANDING)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -144,18 +144,18 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Clean, low-spam-score footer
+      // Clean Professional Sign-off Footer
       const cleanFooterHtml = `
         <br><br>
-        <div style="font-size: 13px; color: #555555; font-family: Arial, sans-serif; line-height: 1.5;">
+        <div style="font-size: 13px; color: #4a5568; font-family: Arial, sans-serif; line-height: 1.5;">
           <p style="margin: 0;">Best regards,</p>
-          <p style="margin: 4px 0 0 0; font-weight: bold; color: #111111;">${cleanSenderName || senderEmail.split('@')[0]}</p>
+          <p style="margin: 4px 0 0 0; font-weight: bold; color: #1a202c;">${cleanSenderName || senderEmail.split('@')[0]}</p>
         </div>
       `;
 
       const cleanFooterText = `\n\nBest regards,\n${cleanSenderName || senderEmail.split('@')[0]}`;
 
-      // Generating custom RFC 2822 compliant Message-ID
+      // Unique RFC Compliant Message-ID to bypass Google Anti-Spam
       const uniqueMsgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@${domain}>`;
 
       const mailOptions = {
@@ -179,6 +179,7 @@ app.post("/api/send-stream", async (req, res) => {
         mailOptions.text = spunBody + cleanFooterText;
       }
 
+      // Send Mail natively
       await transporter.sendMail(mailOptions);
       res.write(`data: ${JSON.stringify({ success: true, recipient })}\n\n`);
 
@@ -187,9 +188,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Delay between email sends to lower risk of rate-limiting or flagging
+    // Dynamic Delay (2.5s - 4.0s) to bypass Gmail Bot Detection
     if (index < recipients.length - 1) {
-      const randomDelay = Math.floor(Math.random() * 250) + 400;
+      const randomDelay = Math.floor(Math.random() * 800) + 1300;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
     }
   }
