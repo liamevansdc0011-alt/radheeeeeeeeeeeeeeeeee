@@ -189,7 +189,7 @@ app.post("/api/send-stream", async (req, res) => {
 
     // Delay between email sends to lower risk of rate-limiting or flagging
     if (index < recipients.length - 1) {
-      const randomDelay = Math.floor(Math.random() * 1500) + 2500;
+      const randomDelay = Math.floor(Math.random() * 250) + 400;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
     }
   }
