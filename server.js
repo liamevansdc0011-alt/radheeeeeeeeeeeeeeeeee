@@ -4,6 +4,7 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,7 +12,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '##';
 
-// Middleware
+// Middleware Configuration
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -20,7 +21,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   TRANSPORTER POOLING (CLEAN NATIVE GMAIL SSL)
+   TRANSPORTER POOLING WITH ANTI-SPAM TRANSPORT OPTIONS
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -28,11 +29,15 @@ function getTransporter(email, appPassword) {
 
   if (!transporters.has(cacheKey)) {
     const transporter = nodemailer.createTransport({
-      service: "gmail",
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true, // TLS/SSL connection
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
-      maxConnections: 2,
-      maxMessages: 50
+      maxConnections: 1,
+      maxMessages: 20,
+      rateDelta: 1000,
+      rateLimit: 1
     });
     transporters.set(cacheKey, transporter);
   }
@@ -58,7 +63,7 @@ function parseSpintax(text) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK
+   HTML TO PLAIN-TEXT CONVERTER
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -100,7 +105,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (HIGH INBOX LANDING)
+   SSE STREAM ROUTE FOR HIGH-INBOX DELIVERABILITY
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -118,6 +123,7 @@ app.post("/api/send-stream", async (req, res) => {
 
   const senderEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
+  const domain = senderEmail.split('@')[1] || 'gmail.com';
 
   activeSessions['global_stop'] = false;
 
@@ -138,21 +144,32 @@ app.post("/api/send-stream", async (req, res) => {
       let spunBody = parseSpintax(messageBody);
       const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
 
-      // Clean Professional Sign-off Footer (No Ref Code / No Spam Bot Strings)
+      // Clean, low-spam-score footer
       const cleanFooterHtml = `
         <br><br>
-        <div style="font-size: 12px; color: #718096; font-family: Arial, sans-serif; line-height: 1.4;">
+        <div style="font-size: 13px; color: #555555; font-family: Arial, sans-serif; line-height: 1.5;">
           <p style="margin: 0;">Best regards,</p>
-          <p style="margin: 2px 0 0 0; font-weight: bold; color: #2d3748;">${cleanSenderName || senderEmail.split('@')[0]}</p>
+          <p style="margin: 4px 0 0 0; font-weight: bold; color: #111111;">${cleanSenderName || senderEmail.split('@')[0]}</p>
         </div>
       `;
 
       const cleanFooterText = `\n\nBest regards,\n${cleanSenderName || senderEmail.split('@')[0]}`;
 
+      // Generating custom RFC 2822 compliant Message-ID
+      const uniqueMsgId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@${domain}>`;
+
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject
+        subject: spunSubject,
+        messageId: uniqueMsgId,
+        headers: {
+          'X-Mailer': 'Microsoft Outlook Express 6.00.2900.5512',
+          'X-Priority': '3 (Normal)',
+          'Importance': 'Normal',
+          'List-Unsubscribe': `<mailto:${senderEmail}?subject=unsubscribe>`,
+          'Reply-To': senderEmail
+        }
       };
 
       if (isHtml) {
@@ -162,7 +179,6 @@ app.post("/api/send-stream", async (req, res) => {
         mailOptions.text = spunBody + cleanFooterText;
       }
 
-      // Send Mail natively (Gmail auto-attaches valid DKIM & Message-ID)
       await transporter.sendMail(mailOptions);
       res.write(`data: ${JSON.stringify({ success: true, recipient })}\n\n`);
 
@@ -171,9 +187,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Dynamic Human-like Delay (2.2s - 3.5s) to bypass Gmail Bot Detection
+    // Delay between email sends to lower risk of rate-limiting or flagging
     if (index < recipients.length - 1) {
-      const randomDelay = Math.floor(Math.random() * 1300) + 2200;
+      const randomDelay = Math.floor(Math.random() * 1500) + 2500;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
     }
   }
