@@ -43,7 +43,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK
+   HTML TO PLAIN-TEXT FALLBACK (Clean MIME Alignment)
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -52,7 +52,11 @@ function convertHtmlToText(html) {
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
     .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\n\s*\n/g, '\n\n')
     .trim();
 }
 
@@ -79,12 +83,13 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE MAIL SENDING ENGINE (EXACT 1.2s SPEED)
+   SSE MAIL SENDING ENGINE (EXACT 1.2s SPEED & INBOX PLACEMENT FIX)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
 
   const { email, appPassword, senderName, subject, messageBody, recipients, unsubscribeUrl } = req.body;
 
@@ -108,33 +113,44 @@ app.post("/api/send-stream", async (req, res) => {
     const recipient = recipients[index] ? recipients[index].trim() : "";
     if (!recipient) continue;
 
+    res.write(': keep-alive\n\n');
+
     try {
       const transporter = getTransporter(email, appPassword);
       const isHtml = /<[a-z][\s\S]*>/i.test(messageBody);
 
-      const headers = {};
+      // Enhanced Inbox-Friendly RFC Standard Headers
+      const headers = {
+        'X-Priority': '3',
+        'X-MSMail-Priority': 'Normal',
+        'Importance': 'Normal'
+      };
+
       if (unsubscribeUrl) {
         headers['List-Unsubscribe'] = `<${unsubscribeUrl}>`;
         headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
       }
 
+      // Pure message payload with zero appended codes or extra text
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
         subject: subject,
+        date: new Date(),
         text: isHtml ? convertHtmlToText(messageBody) : messageBody,
         ...(isHtml && { html: messageBody }),
-        ...(Object.keys(headers).length > 0 && { headers })
+        headers
       };
 
-      await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient })}\n\n`);
+      const info = await transporter.sendMail(mailOptions);
+      res.write(`data: ${JSON.stringify({ success: true, recipient, messageId: info.messageId })}\n\n`);
 
     } catch (error) {
+      console.error(`[Mail Error] ${recipient}:`, error.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Exact 1.2 Seconds Delay (1200ms)
+    // Exact 1.2 Seconds Delay (1200ms) - Maintained
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 1200));
     }
