@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// Hardcoded Site Password as requested
+// Login Password fixed as '@@@@'
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '@@@@';
 
 app.use(cors());
@@ -21,7 +21,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   AUTHENTICATED SMTP TRANSPORTER POOL
+   SMTP TRANSPORTER POOLING
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -43,7 +43,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   PLAIN TEXT CONVERTER
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -57,7 +57,7 @@ function convertHtmlToText(html) {
 }
 
 /* ==========================================================================
-   AUTHENTICATION & SMTP VERIFICATION ROUTES
+   AUTHENTICATION & VERIFICATION ROUTES
    ========================================================================== */
 app.post("/api/auth", (req, res) => {
   const { password } = req.body;
@@ -79,7 +79,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE STREAM ROUTE (SENDING ENGINE)
+   SSE MAIL SENDING ENGINE (EXACT 1.2s SPEED)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -112,10 +112,7 @@ app.post("/api/send-stream", async (req, res) => {
       const transporter = getTransporter(email, appPassword);
       const isHtml = /<[a-z][\s\S]*>/i.test(messageBody);
 
-      const headers = {
-        'X-Mailer': 'NodeMailer'
-      };
-
+      const headers = {};
       if (unsubscribeUrl) {
         headers['List-Unsubscribe'] = `<${unsubscribeUrl}>`;
         headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
@@ -127,7 +124,7 @@ app.post("/api/send-stream", async (req, res) => {
         subject: subject,
         text: isHtml ? convertHtmlToText(messageBody) : messageBody,
         ...(isHtml && { html: messageBody }),
-        headers
+        ...(Object.keys(headers).length > 0 && { headers })
       };
 
       await transporter.sendMail(mailOptions);
@@ -137,7 +134,7 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Exact 1.2 Second Delay (1200ms)
+    // Exact 1.2 Seconds Delay (1200ms)
     if (index < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 1200));
     }
