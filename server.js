@@ -19,7 +19,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   AUTHENTICATED SMTP TRANSPORTER POOL
+   SMTP TRANSPORTER POOLING
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -33,7 +33,7 @@ function getTransporter(email, appPassword) {
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
       maxConnections: 1,
-      maxMessages: 100
+      maxMessages: 50
     });
     transporters.set(cacheKey, transporter);
   }
@@ -41,25 +41,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   SPINTAX PARSER
-   ========================================================================== */
-function parseSpintax(text) {
-  if (!text) return "";
-  let spun = text;
-  const regex = /{([^{}]+)}/g;
-  let iterations = 0;
-  while (regex.test(spun) && iterations < 5) {
-    spun = spun.replace(regex, (_, choices) => {
-      const options = choices.split('|');
-      return options[Math.floor(Math.random() * options.length)];
-    });
-    iterations++;
-  }
-  return spun;
-}
-
-/* ==========================================================================
-   PLAIN TEXT CONVERTER
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -99,7 +81,7 @@ app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
 
-  const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
+  const { email, appPassword, senderName, subject, messageBody, recipients, unsubscribeUrl } = req.body;
 
   if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
     res.write(`data: ${JSON.stringify({ success: false, error: "Invalid payload" })}\n\n`);
@@ -123,20 +105,24 @@ app.post("/api/send-stream", async (req, res) => {
 
     try {
       const transporter = getTransporter(email, appPassword);
-      const spunSubject = parseSpintax(subject);
-      const spunBody = parseSpintax(messageBody);
-      const isHtml = /<[a-z][\s\S]*>/i.test(spunBody);
+      const isHtml = /<[a-z][\s\S]*>/i.test(messageBody);
+
+      const headers = {
+        'X-Mailer': 'NodeMailer'
+      };
+
+      if (unsubscribeUrl) {
+        headers['List-Unsubscribe'] = `<${unsubscribeUrl}>`;
+        headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+      }
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
-        subject: spunSubject,
-        text: isHtml ? convertHtmlToText(spunBody) : spunBody,
-        ...(isHtml && { html: spunBody }),
-        headers: {
-          'X-Mailer': 'NodeMailer',
-          'X-Priority': '3' // Normal priority
-        }
+        subject: subject,
+        text: isHtml ? convertHtmlToText(messageBody) : messageBody,
+        ...(isHtml && { html: messageBody }),
+        headers
       };
 
       await transporter.sendMail(mailOptions);
@@ -146,9 +132,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Delay set to ~1.2s to 1.5s as requested
+    // Delay set to 1.5s - 2.0s to avoid instant rate limiting
     if (index < recipients.length - 1) {
-      const delay = Math.floor(Math.random() * 300) + 1200;
+      const delay = Math.floor(Math.random() * 500) + 1500;
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
