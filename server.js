@@ -10,7 +10,6 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// Login Password fixed as '@@@@'
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '@@@@';
 
 app.use(cors());
@@ -29,13 +28,11 @@ function getTransporter(email, appPassword) {
 
   if (!transporters.has(cacheKey)) {
     const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
+      service: 'gmail',
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
       maxConnections: 1,
-      maxMessages: 100
+      maxMessages: 50
     });
     transporters.set(cacheKey, transporter);
   }
@@ -43,7 +40,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK (Clean MIME Alignment)
+   HTML TO PLAIN-TEXT FALLBACK
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -83,7 +80,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   SSE MAIL SENDING ENGINE (EXACT 1.2s SPEED & INBOX PLACEMENT FIX)
+   SSE MAIL SENDING ENGINE (INBOX OPTIMIZED)
    ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -119,27 +116,19 @@ app.post("/api/send-stream", async (req, res) => {
       const transporter = getTransporter(email, appPassword);
       const isHtml = /<[a-z][\s\S]*>/i.test(messageBody);
 
-      // Enhanced Inbox-Friendly RFC Standard Headers
-      const headers = {
-        'X-Priority': '3',
-        'X-MSMail-Priority': 'Normal',
-        'Importance': 'Normal'
-      };
-
+      const headers = {};
       if (unsubscribeUrl) {
         headers['List-Unsubscribe'] = `<${unsubscribeUrl}>`;
         headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
       }
 
-      // Pure message payload with zero appended codes or extra text
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
         to: recipient,
         subject: subject,
-        date: new Date(),
         text: isHtml ? convertHtmlToText(messageBody) : messageBody,
         ...(isHtml && { html: messageBody }),
-        headers
+        ...(Object.keys(headers).length > 0 && { headers })
       };
 
       const info = await transporter.sendMail(mailOptions);
@@ -150,9 +139,10 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Exact 1.2 Seconds Delay (1200ms) - Maintained
+    // Dynamic Human-like Delay (3.5s to 5.5s) to prevent spam detection
     if (index < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      const naturalDelay = Math.floor(Math.random() * 2000) + 3500;
+      await new Promise(resolve => setTimeout(resolve, naturalDelay));
     }
   }
 
