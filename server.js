@@ -9,7 +9,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const SITE_PASSWORD = process.env.SITE_PASSWORD || 'change_this_####';
+
+// Hardcoded Site Password as requested
+const SITE_PASSWORD = process.env.SITE_PASSWORD || '@@@@';
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
@@ -19,7 +21,7 @@ const activeSessions = {};
 const transporters = new Map();
 
 /* ==========================================================================
-   SMTP TRANSPORTER POOLING
+   AUTHENTICATED SMTP TRANSPORTER POOL
    ========================================================================== */
 function getTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -33,7 +35,7 @@ function getTransporter(email, appPassword) {
       auth: { user: cleanEmail, pass: appPassword },
       pool: true,
       maxConnections: 1,
-      maxMessages: 50
+      maxMessages: 100
     });
     transporters.set(cacheKey, transporter);
   }
@@ -41,7 +43,7 @@ function getTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   HTML TO PLAIN-TEXT FALLBACK
+   PLAIN TEXT CONVERTER
    ========================================================================== */
 function convertHtmlToText(html) {
   if (!html) return "";
@@ -55,12 +57,12 @@ function convertHtmlToText(html) {
 }
 
 /* ==========================================================================
-   ROUTES
+   AUTHENTICATION & SMTP VERIFICATION ROUTES
    ========================================================================== */
 app.post("/api/auth", (req, res) => {
   const { password } = req.body;
   if (password === SITE_PASSWORD) return res.json({ success: true });
-  return res.status(401).json({ success: false, message: "Unauthorized access" });
+  return res.status(401).json({ success: false, message: "Incorrect password" });
 });
 
 app.post("/api/verify", async (req, res) => {
@@ -76,6 +78,9 @@ app.post("/api/verify", async (req, res) => {
   }
 });
 
+/* ==========================================================================
+   SSE STREAM ROUTE (SENDING ENGINE)
+   ========================================================================== */
 app.post("/api/send-stream", async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -132,10 +137,9 @@ app.post("/api/send-stream", async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient, error: error.message })}\n\n`);
     }
 
-    // Delay set to 1.5s - 2.0s to avoid instant rate limiting
+    // Exact 1.2 Second Delay (1200ms)
     if (index < recipients.length - 1) {
-      const delay = Math.floor(Math.random() * 500) + 1500;
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise(resolve => setTimeout(resolve, 1200));
     }
   }
 
@@ -143,6 +147,9 @@ app.post("/api/send-stream", async (req, res) => {
   res.end();
 });
 
+/* ==========================================================================
+   STOP ROUTE
+   ========================================================================== */
 app.post("/api/stop", (req, res) => {
   activeSessions['global_stop'] = true;
   res.json({ success: true, message: "Stopping send engine" });
