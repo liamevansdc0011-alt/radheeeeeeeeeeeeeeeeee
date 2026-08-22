@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. HIGH DELIVERABILITY TRANSPORTER (STARTTLS OPTIMIZED)
+   1. SECURE Gmail SMTP TRANSPORTER
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -31,14 +31,14 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false, // TLS via STARTTLS
+      secure: false, // STARTTLS connection
       requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: appPassword
       },
       pool: true,
-      maxConnections: 1, // Safe Gmail rate-limit threshold to avoid IP throttle
+      maxConnections: 1, // Single connection limits account throttling
       maxMessages: 100
     });
 
@@ -49,29 +49,8 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. ANTI-SPAM & DYNAMIC IDENTIFIER ENGINES
+   2. RECIPIENT PARSER & SPINTAX ENGINES
    ========================================================================== */
-
-// Generates a visible, professional, unique ID for body variance (Avoids Spam Filters)
-function generateUniqueBodyIdentifier() {
-  const segment1 = crypto.randomBytes(2).toString('hex').toUpperCase();
-  const segment2 = crypto.randomBytes(2).toString('hex').toUpperCase();
-  const segment3 = crypto.randomBytes(2).toString('hex').toUpperCase();
-  return `[ID: ${segment1}-${segment2}-${segment3}]`;
-}
-
-// Organic Closing Calls to Action
-function getOrganicCallToAction() {
-  const ctas = [
-    "Would love to hear your thoughts on this.",
-    "Let me know if this sounds relevant to you right now.",
-    "Feel free to reply directly to this email if you have any questions.",
-    "Looking forward to your thoughts whenever you get a moment.",
-    "Do you have 2 minutes for a brief response on this?"
-  ];
-  return ctas[Math.floor(Math.random() * ctas.length)];
-}
-
 function parseRecipientData(input) {
   let email = "";
   let rawName = "";
@@ -200,7 +179,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Dynamic Smart-Speed + High Inbox Routing)
+   4. STREAMING ENGINE (Clean Organic Sending Pattern)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -218,7 +197,6 @@ app.post('/api/send-stream', async (req, res) => {
 
   const cleanEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
-  const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
   globalSession.stopRequested = false;
 
   const keepAlivePing = setInterval(() => {
@@ -241,35 +219,18 @@ app.post('/api/send-stream', async (req, res) => {
       const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-      const uniqueBodyID = generateUniqueBodyIdentifier();
-      const organicCTA = getOrganicCallToAction();
-      
-      // Standard RFC 5322 Compliant Unique Message-ID
-      const messageId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@${domainPart}>`;
-
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
-        subject: personalizedSubject,
-        messageId: messageId,
-        date: new Date(),
-        headers: {
-          'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
-          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
-        }
+        subject: personalizedSubject
       };
 
       if (isHtml) {
-        mailOptions.html = `
-          ${personalizedBody}
-          <br><br>
-          <p style="font-size: 13px; color: #444444; margin-top: 15px;">${organicCTA}</p>
-          <p style="font-size: 10px; color: #888888; margin-top: 20px; font-family: monospace;">${uniqueBodyID}</p>
-        `;
-        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}\n\n${uniqueBodyID}`;
+        mailOptions.html = personalizedBody;
+        mailOptions.text = createPlainTextFromHtml(personalizedBody);
       } else {
-        mailOptions.text = personalizedBody + `\n\n${organicCTA}\n\n${uniqueBodyID}`;
+        mailOptions.text = personalizedBody;
       }
 
       await transporter.sendMail(mailOptions);
@@ -280,10 +241,10 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Smart Human-Jitter Delay (1200ms - 2800ms) to Bypass Gmail Bot Detection
+    // Natural sending interval (2.0s to 3.5s) to avoid Gmail rate throttling
     if (i < recipients.length - 1) {
-      const humanDelay = Math.floor(1200 + Math.random() * 1600);
-      await new Promise(resolve => setTimeout(resolve, humanDelay));
+      const naturalDelay = Math.floor(2000 + Math.random() * 1500);
+      await new Promise(resolve => setTimeout(resolve, naturalDelay));
     }
   }
 
@@ -298,7 +259,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [High-Inbox Engine Active]`);
+  console.log(`Server running on Port ${PORT} [Clean Inbox Engine Active]`);
 });
 
 export default app;
