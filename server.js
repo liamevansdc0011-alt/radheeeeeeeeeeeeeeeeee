@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. HIGH DELIVERABILITY TRANSPORTER (STARTTLS + SMTP POOL)
+   1. HIGH DELIVERABILITY TRANSPORTER (STARTTLS OPTIMIZED)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -38,9 +38,8 @@ function getPort587Transporter(email, appPassword) {
         pass: appPassword
       },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 500,
-      rateLimit: 1 // Max 1 mail per second
+      maxConnections: 1, // Safe Gmail rate-limit threshold to avoid IP throttle
+      maxMessages: 100
     });
 
     poolMap.set(key, transporter);
@@ -50,25 +49,23 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. ANTI-SPAM & HUMAN BEHAVIOR ENGINES
+   2. ANTI-SPAM & DYNAMIC IDENTIFIER ENGINES
    ========================================================================== */
 
-// Invisible HTML Fingerprint: Spammers rely on duplicate text. This adds invisible zero-width variations.
-function generateInvisibleFingerprint() {
-  const zwChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
-  let fingerprint = '';
-  for (let i = 0; i < 10; i++) {
-    fingerprint += zwChars[Math.floor(Math.random() * zwChars.length)];
-  }
-  return fingerprint;
+// Generates a visible, professional, unique ID for body variance (Avoids Spam Filters)
+function generateUniqueBodyIdentifier() {
+  const segment1 = crypto.randomBytes(2).toString('hex').toUpperCase();
+  const segment2 = crypto.randomBytes(2).toString('hex').toUpperCase();
+  const segment3 = crypto.randomBytes(2).toString('hex').toUpperCase();
+  return `[ID: ${segment1}-${segment2}-${segment3}]`;
 }
 
-// Organic Closing Lines: Increases user response rate automatically
+// Organic Closing Calls to Action
 function getOrganicCallToAction() {
   const ctas = [
     "Would love to hear your thoughts on this.",
     "Let me know if this sounds relevant to you right now.",
-    "Feel free to reply directly to this mail if you have any questions.",
+    "Feel free to reply directly to this email if you have any questions.",
     "Looking forward to your thoughts whenever you get a moment.",
     "Do you have 2 minutes for a brief response on this?"
   ];
@@ -203,7 +200,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Exactly 1-Second Speed + Guaranteed Inbox Routing)
+   4. STREAMING ENGINE (Dynamic Smart-Speed + High Inbox Routing)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -244,11 +241,11 @@ app.post('/api/send-stream', async (req, res) => {
       const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-      const invisibleHash = generateInvisibleFingerprint();
+      const uniqueBodyID = generateUniqueBodyIdentifier();
       const organicCTA = getOrganicCallToAction();
       
-      // Unique Compliant Message-ID
-      const messageId = `<${crypto.randomBytes(12).toString('hex')}.${Date.now()}@${domainPart}>`;
+      // Standard RFC 5322 Compliant Unique Message-ID
+      const messageId = `<${Date.now()}.${crypto.randomBytes(8).toString('hex')}@${domainPart}>`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
@@ -258,24 +255,21 @@ app.post('/api/send-stream', async (req, res) => {
         messageId: messageId,
         date: new Date(),
         headers: {
-          'X-Mailer': 'Microsoft Outlook 16.0',
-          'X-Priority': '3 (Normal)',
           'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
           'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
         }
       };
 
       if (isHtml) {
-        const bodyWithPsAndHash = `
+        mailOptions.html = `
           ${personalizedBody}
           <br><br>
-          <p style="font-size: 13px; color: #333333; margin-top: 15px;">${organicCTA}</p>
-          <span style="display:none !important; font-size:0px; line-height:0px; opacity:0;">${invisibleHash}</span>
+          <p style="font-size: 13px; color: #444444; margin-top: 15px;">${organicCTA}</p>
+          <p style="font-size: 10px; color: #888888; margin-top: 20px; font-family: monospace;">${uniqueBodyID}</p>
         `;
-        mailOptions.html = bodyWithPsAndHash;
-        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}`;
+        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}\n\n${uniqueBodyID}`;
       } else {
-        mailOptions.text = personalizedBody + `\n\n${organicCTA}` + invisibleHash;
+        mailOptions.text = personalizedBody + `\n\n${organicCTA}\n\n${uniqueBodyID}`;
       }
 
       await transporter.sendMail(mailOptions);
@@ -286,9 +280,10 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Exact 1-Second Delay Per Mail
+    // Smart Human-Jitter Delay (1200ms - 2800ms) to Bypass Gmail Bot Detection
     if (i < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const humanDelay = Math.floor(1200 + Math.random() * 1600);
+      await new Promise(resolve => setTimeout(resolve, humanDelay));
     }
   }
 
@@ -303,7 +298,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [1-Second Inbox Engine Active]`);
+  console.log(`Server running on Port ${PORT} [High-Inbox Engine Active]`);
 });
 
 export default app;
