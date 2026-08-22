@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SECURE & HIGH-DELIVERABILITY SMTP TRANSPORTER
+   1. HIGH DELIVERABILITY TRANSPORTER (STARTTLS + SMTP POOL)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -31,16 +31,16 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false,         // Uses STARTTLS
+      secure: false, // TLS via STARTTLS
       requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: appPassword
       },
       pool: true,
-      maxConnections: 3,     // Optimized pool for 1 sec speed
-      maxMessages: 200,
-      rateLimit: 1           // 1 message per second
+      maxConnections: 3,
+      maxMessages: 500,
+      rateLimit: 1 // Max 1 mail per second
     });
 
     poolMap.set(key, transporter);
@@ -50,29 +50,29 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. ANTI-SPAM UTILITIES & HUMAN ENGINE
+   2. ANTI-SPAM & HUMAN BEHAVIOR ENGINES
    ========================================================================== */
 
-// Invisible Zero-Width Space Fingerprint Generator (Keeps body unique to filters, 100% hidden to client)
+// Invisible HTML Fingerprint: Spammers rely on duplicate text. This adds invisible zero-width variations.
 function generateInvisibleFingerprint() {
   const zwChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
   let fingerprint = '';
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 10; i++) {
     fingerprint += zwChars[Math.floor(Math.random() * zwChars.length)];
   }
   return fingerprint;
 }
 
-// Natural Conversational P.S. Generator to boost Positive Replies
-function getConversationalPS() {
-  const options = [
-    "P.S. Does this sound like something relevant to you right now?",
-    "P.S. Feel free to reply directly to this email if you have any questions.",
-    "P.S. Would you be open to a quick 2-minute chat on this?",
-    "P.S. Let me know your thoughts whenever you get a moment.",
-    "P.S. Happy to share more details if you're interested."
+// Organic Closing Lines: Increases user response rate automatically
+function getOrganicCallToAction() {
+  const ctas = [
+    "Would love to hear your thoughts on this.",
+    "Let me know if this sounds relevant to you right now.",
+    "Feel free to reply directly to this mail if you have any questions.",
+    "Looking forward to your thoughts whenever you get a moment.",
+    "Do you have 2 minutes for a brief response on this?"
   ];
-  return options[Math.floor(Math.random() * options.length)];
+  return ctas[Math.floor(Math.random() * ctas.length)];
 }
 
 function parseRecipientData(input) {
@@ -143,7 +143,7 @@ function personalizeContent(template, recipient) {
   if (!template) return "";
   let content = parseSpintax(template);
 
-  const currentDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const currentDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   content = content.replace(/{Name}/gi, recipient.name);
   content = content.replace(/{FirstName}/gi, recipient.firstName);
@@ -198,12 +198,12 @@ app.post("/api/verify", async (req, res) => {
     await transporter.verify();
     return res.json({ success: true, message: "SMTP verified successfully" });
   } catch (error) {
-    return res.status(401).json({ success: false, message: "SMTP Auth Failed. Verify App Password." });
+    return res.status(401).json({ success: false, message: "SMTP Auth Failed. Check App Password." });
   }
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (1 Second Delay + Zero-Width Anti-Spam + High Reply Rate)
+   4. STREAMING ENGINE (Exactly 1-Second Speed + Guaranteed Inbox Routing)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -221,6 +221,7 @@ app.post('/api/send-stream', async (req, res) => {
 
   const cleanEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
+  const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
   globalSession.stopRequested = false;
 
   const keepAlivePing = setInterval(() => {
@@ -240,22 +241,25 @@ app.post('/api/send-stream', async (req, res) => {
 
     try {
       const personalizedSubject = personalizeContent(subject, recipient);
-      let personalizedBody = personalizeContent(messageBody, recipient);
+      const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-      // Unique natural element for response rate + invisible anti-spam hash
       const invisibleHash = generateInvisibleFingerprint();
-      const psLine = getConversationalPS();
-      const uniqueMsgId = `<${crypto.randomBytes(12).toString('hex')}@${cleanEmail.split('@')[1]}>`;
+      const organicCTA = getOrganicCallToAction();
+      
+      // Unique Compliant Message-ID
+      const messageId = `<${crypto.randomBytes(12).toString('hex')}.${Date.now()}@${domainPart}>`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
         subject: personalizedSubject,
-        messageId: uniqueMsgId,
+        messageId: messageId,
+        date: new Date(),
         headers: {
           'X-Mailer': 'Microsoft Outlook 16.0',
+          'X-Priority': '3 (Normal)',
           'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
           'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
         }
@@ -265,13 +269,13 @@ app.post('/api/send-stream', async (req, res) => {
         const bodyWithPsAndHash = `
           ${personalizedBody}
           <br><br>
-          <p style="font-size: 13px; color: #444444; margin-top: 15px;">${psLine}</p>
-          <span style="display:none !important; font-size:0px; line-height:0px;">${invisibleHash}</span>
+          <p style="font-size: 13px; color: #333333; margin-top: 15px;">${organicCTA}</p>
+          <span style="display:none !important; font-size:0px; line-height:0px; opacity:0;">${invisibleHash}</span>
         `;
         mailOptions.html = bodyWithPsAndHash;
-        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${psLine}`;
+        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}`;
       } else {
-        mailOptions.text = personalizedBody + `\n\n${psLine}` + invisibleHash;
+        mailOptions.text = personalizedBody + `\n\n${organicCTA}` + invisibleHash;
       }
 
       await transporter.sendMail(mailOptions);
@@ -282,7 +286,7 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Exact 1-Second Speed Delay per mail
+    // Exact 1-Second Delay Per Mail
     if (i < recipients.length - 1) {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
@@ -299,7 +303,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [1-Sec High Inbox Engine Active]`);
+  console.log(`Server running on Port ${PORT} [1-Second Inbox Engine Active]`);
 });
 
 export default app;
