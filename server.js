@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SECURE SMTP TRANSPORTER (TLS Port 587 - High Deliverability)
+   1. SECURE & HIGH-DELIVERABILITY SMTP TRANSPORTER
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -38,8 +38,9 @@ function getPort587Transporter(email, appPassword) {
         pass: appPassword
       },
       pool: true,
-      maxConnections: 1,     // Safe connection limit for Gmail
-      maxMessages: 100
+      maxConnections: 3,     // Optimized pool for 1 sec speed
+      maxMessages: 200,
+      rateLimit: 1           // 1 message per second
     });
 
     poolMap.set(key, transporter);
@@ -49,13 +50,29 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. RECIPIENT PARSER, SPINTAX, PERSONALIZATION & REF-CODE GENERATOR
+   2. ANTI-SPAM UTILITIES & HUMAN ENGINE
    ========================================================================== */
 
-// Dynamic Unique Reference Code Generator (e.g. "[Ref: 2067d6ec]")
-function generateReferenceCode() {
-  const randomHex = crypto.randomBytes(4).toString('hex');
-  return `[Ref: ${randomHex}]`;
+// Invisible Zero-Width Space Fingerprint Generator (Keeps body unique to filters, 100% hidden to client)
+function generateInvisibleFingerprint() {
+  const zwChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
+  let fingerprint = '';
+  for (let i = 0; i < 8; i++) {
+    fingerprint += zwChars[Math.floor(Math.random() * zwChars.length)];
+  }
+  return fingerprint;
+}
+
+// Natural Conversational P.S. Generator to boost Positive Replies
+function getConversationalPS() {
+  const options = [
+    "P.S. Does this sound like something relevant to you right now?",
+    "P.S. Feel free to reply directly to this email if you have any questions.",
+    "P.S. Would you be open to a quick 2-minute chat on this?",
+    "P.S. Let me know your thoughts whenever you get a moment.",
+    "P.S. Happy to share more details if you're interested."
+  ];
+  return options[Math.floor(Math.random() * options.length)];
 }
 
 function parseRecipientData(input) {
@@ -92,9 +109,9 @@ function parseRecipientData(input) {
 
   const formattedName = rawName
     ? rawName.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
-    : "Valued Client";
+    : "Valued Partner";
 
-  const firstName = formattedName.split(' ')[0] || "Client";
+  const firstName = formattedName.split(' ')[0] || "there";
   const domain = email.includes('@') ? email.split('@')[1] : "";
 
   return {
@@ -105,7 +122,6 @@ function parseRecipientData(input) {
   };
 }
 
-// Spintax Parsing for Natural Dynamic Content ({Hello|Hi|Hey})
 function parseSpintax(text) {
   if (!text) return "";
   let spun = text;
@@ -127,16 +143,18 @@ function personalizeContent(template, recipient) {
   if (!template) return "";
   let content = parseSpintax(template);
 
+  const currentDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
   content = content.replace(/{Name}/gi, recipient.name);
   content = content.replace(/{FirstName}/gi, recipient.firstName);
   content = content.replace(/{First_Name}/gi, recipient.firstName);
   content = content.replace(/{Email}/gi, recipient.email);
   content = content.replace(/{Domain}/gi, recipient.domain);
+  content = content.replace(/{Date}/gi, currentDate);
 
   return content;
 }
 
-// Automatic Plain Text Fallback Generator (Spam-Filter Compliance)
 function createPlainTextFromHtml(html) {
   if (!html) return "";
   return html
@@ -185,7 +203,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (High Inbox Rate + Dynamic Ref-Code + Safe Delay)
+   4. STREAMING ENGINE (1 Second Delay + Zero-Width Anti-Spam + High Reply Rate)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -222,44 +240,51 @@ app.post('/api/send-stream', async (req, res) => {
 
     try {
       const personalizedSubject = personalizeContent(subject, recipient);
-      const personalizedBody = personalizeContent(messageBody, recipient);
+      let personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-      // Har Email ke liye Server-Side Random Ref-Code Generate hoga
-      const refCode = generateReferenceCode();
+      // Unique natural element for response rate + invisible anti-spam hash
+      const invisibleHash = generateInvisibleFingerprint();
+      const psLine = getConversationalPS();
+      const uniqueMsgId = `<${crypto.randomBytes(12).toString('hex')}@${cleanEmail.split('@')[1]}>`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
-        to: recipient.name !== "Valued Client" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
+        to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
         subject: personalizedSubject,
+        messageId: uniqueMsgId,
         headers: {
+          'X-Mailer': 'Microsoft Outlook 16.0',
           'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
           'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
         }
       };
 
-      // Footer me Dynamic Ref-Code append karna
       if (isHtml) {
-        const htmlFooter = `<br><br><p style="font-size: 11px; color: #777777; font-family: monospace;">${refCode}</p>`;
-        mailOptions.html = personalizedBody + htmlFooter;
-        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${refCode}`;
+        const bodyWithPsAndHash = `
+          ${personalizedBody}
+          <br><br>
+          <p style="font-size: 13px; color: #444444; margin-top: 15px;">${psLine}</p>
+          <span style="display:none !important; font-size:0px; line-height:0px;">${invisibleHash}</span>
+        `;
+        mailOptions.html = bodyWithPsAndHash;
+        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${psLine}`;
       } else {
-        mailOptions.text = personalizedBody + `\n\n${refCode}`;
+        mailOptions.text = personalizedBody + `\n\n${psLine}` + invisibleHash;
       }
 
       await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name, ref: refCode })}\n\n`);
+      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name })}\n\n`);
 
     } catch (err) {
       console.error(`Send Failure [${recipient.email}]:`, err.message);
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Safe Human Delay (1.5s - 5.0s) for Inbox Landing Rate
+    // Exact 1-Second Speed Delay per mail
     if (i < recipients.length - 1) {
-      const delay = Math.floor(1500 + Math.random() * 500); // 1500ms - 5000ms
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
 
@@ -274,7 +299,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [Inbox-Optimized Engine Active]`);
+  console.log(`Server running on Port ${PORT} [1-Sec High Inbox Engine Active]`);
 });
 
 export default app;
