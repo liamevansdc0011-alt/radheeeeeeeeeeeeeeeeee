@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SECURE Gmail SMTP TRANSPORTER
+   1. SECURE & INBOX-OPTIMIZED Gmail SMTP TRANSPORTER
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -31,15 +31,17 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false, // STARTTLS connection
+      secure: false, // STARTTLS
       requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: appPassword
       },
       pool: true,
-      maxConnections: 1, // Single connection limits account throttling
-      maxMessages: 100
+      maxConnections: 3, // Slightly increased for faster queue processing
+      maxMessages: 200,
+      rateDelta: 1000,
+      rateLimit: 1
     });
 
     poolMap.set(key, transporter);
@@ -179,7 +181,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Clean Organic Sending Pattern)
+   4. STREAMING ENGINE (High Inbox Delivery + Optimized Speed)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -204,6 +206,7 @@ app.post('/api/send-stream', async (req, res) => {
   }, 4000);
 
   const transporter = getPort587Transporter(email, appPassword);
+  const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
 
   for (let i = 0; i < recipients.length; i++) {
     if (globalSession.stopRequested) {
@@ -219,11 +222,19 @@ app.post('/api/send-stream', async (req, res) => {
       const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
+      // Generating unique organic Message-ID to pass spam filters
+      const uniqueMsgId = `<${crypto.randomBytes(12).toString('hex')}@${domainPart}>`;
+
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
-        subject: personalizedSubject
+        subject: personalizedSubject,
+        messageId: uniqueMsgId,
+        headers: {
+          'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex'),
+          'X-Mailer': 'Gmail Web Interface'
+        }
       };
 
       if (isHtml) {
@@ -241,10 +252,10 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Natural sending interval (2.0s to 3.5s) to avoid Gmail rate throttling
+    // Set to 1.9 Seconds with natural micro-variation (+/- 300ms) for speed & inbox safety
     if (i < recipients.length - 1) {
-      const naturalDelay = Math.floor(2000 + Math.random() * 1500);
-      await new Promise(resolve => setTimeout(resolve, naturalDelay));
+      const speedDelay = 1900 + (Math.floor(Math.random() * 600) - 300);
+      await new Promise(resolve => setTimeout(resolve, Math.max(1200, speedDelay)));
     }
   }
 
@@ -259,7 +270,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [Clean Inbox Engine Active]`);
+  console.log(`Server running on Port ${PORT} [Fast & Safe Inbox Engine Active]`);
 });
 
 export default app;
