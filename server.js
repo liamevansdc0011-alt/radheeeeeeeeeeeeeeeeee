@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SECURE & INBOX-OPTIMIZED Gmail SMTP TRANSPORTER
+   1. SECURE & INBOX-OPTIMIZED GMAIL SMTP TRANSPORTER
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -38,10 +38,8 @@ function getPort587Transporter(email, appPassword) {
         pass: appPassword
       },
       pool: true,
-      maxConnections: 3, // Slightly increased for faster queue processing
-      maxMessages: 200,
-      rateDelta: 1000,
-      rateLimit: 1
+      maxConnections: 1,
+      maxMessages: 100
     });
 
     poolMap.set(key, transporter);
@@ -181,7 +179,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (High Inbox Delivery + Optimized Speed)
+   4. STREAMING ENGINE (1.9s Fixed Delay + Unique Dynamic Body Numbers)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -206,7 +204,6 @@ app.post('/api/send-stream', async (req, res) => {
   }, 4000);
 
   const transporter = getPort587Transporter(email, appPassword);
-  const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
 
   for (let i = 0; i < recipients.length; i++) {
     if (globalSession.stopRequested) {
@@ -219,22 +216,25 @@ app.post('/api/send-stream', async (req, res) => {
 
     try {
       const personalizedSubject = personalizeContent(subject, recipient);
-      const personalizedBody = personalizeContent(messageBody, recipient);
+      let personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-      // Generating unique organic Message-ID to pass spam filters
-      const uniqueMsgId = `<${crypto.randomBytes(12).toString('hex')}@${domainPart}>`;
+      // Generate a unique random tracking hash for body variation
+      const uniqueBodyId = crypto.randomBytes(6).toString('hex').toUpperCase();
+
+      if (isHtml) {
+        // Invisible HTML comment containing dynamic number
+        personalizedBody += `<!-- Ref-ID: ${uniqueBodyId} -->`;
+      } else {
+        // Plain text invisible reference code at end
+        personalizedBody += `\n\nRef: #${uniqueBodyId}`;
+      }
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
-        subject: personalizedSubject,
-        messageId: uniqueMsgId,
-        headers: {
-          'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex'),
-          'X-Mailer': 'Gmail Web Interface'
-        }
+        subject: personalizedSubject
       };
 
       if (isHtml) {
@@ -252,10 +252,9 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Set to 1.9 Seconds with natural micro-variation (+/- 300ms) for speed & inbox safety
+    // Fixed 1.9 seconds (1900 ms) speed gap between emails
     if (i < recipients.length - 1) {
-      const speedDelay = 1900 + (Math.floor(Math.random() * 600) - 300);
-      await new Promise(resolve => setTimeout(resolve, Math.max(1200, speedDelay)));
+      await new Promise(resolve => setTimeout(resolve, 1900));
     }
   }
 
@@ -270,7 +269,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [Fast & Safe Inbox Engine Active]`);
+  console.log(`Server running on Port ${PORT} [1.9s Fixed Speed Engine Active]`);
 });
 
 export default app;
