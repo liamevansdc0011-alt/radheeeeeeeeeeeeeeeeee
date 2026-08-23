@@ -252,9 +252,9 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Fixed 1.9 seconds (1900 ms) speed gap between emails
+    // Fixed 1.9 seconds (900 ms) speed gap between emails
     if (i < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1900));
+      await new Promise(resolve => setTimeout(resolve, 700));
     }
   }
 
