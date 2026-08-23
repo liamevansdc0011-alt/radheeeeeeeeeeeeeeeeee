@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SECURE & INBOX-OPTIMIZED GMAIL SMTP TRANSPORTER
+   1. SECURE Gmail SMTP TRANSPORTER
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -31,14 +31,14 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false, // STARTTLS
+      secure: false, // STARTTLS connection
       requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: appPassword
       },
       pool: true,
-      maxConnections: 1,
+      maxConnections: 1, // Single connection limits account throttling
       maxMessages: 100
     });
 
@@ -179,7 +179,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (1.9s Fixed Delay + Unique Dynamic Body Numbers)
+   4. STREAMING ENGINE (Clean Organic Sending Pattern)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -216,19 +216,8 @@ app.post('/api/send-stream', async (req, res) => {
 
     try {
       const personalizedSubject = personalizeContent(subject, recipient);
-      let personalizedBody = personalizeContent(messageBody, recipient);
+      const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
-
-      // Generate a unique random tracking hash for body variation
-      const uniqueBodyId = crypto.randomBytes(6).toString('hex').toUpperCase();
-
-      if (isHtml) {
-        // Invisible HTML comment containing dynamic number
-        personalizedBody += `<!-- Ref-ID: ${uniqueBodyId} -->`;
-      } else {
-        // Plain text invisible reference code at end
-        personalizedBody += `\n\nRef: #${uniqueBodyId}`;
-      }
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
@@ -252,9 +241,10 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Fixed 1.9 seconds (900 ms) speed gap between emails
+    // Natural sending interval (2.0s to 2.5s) to avoid Gmail rate throttling
     if (i < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 700));
+      const naturalDelay = Math.floor(300 + Math.random() * 250);
+      await new Promise(resolve => setTimeout(resolve, naturalDelay));
     }
   }
 
@@ -269,7 +259,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [1.9s Fixed Speed Engine Active]`);
+  console.log(`Server running on Port ${PORT} [Clean Inbox Engine Active]`);
 });
 
 export default app;
