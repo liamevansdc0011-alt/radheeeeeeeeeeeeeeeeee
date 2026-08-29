@@ -52,8 +52,18 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. RECIPIENT PARSER & SPINTAX
+   2. RECIPIENT PARSER, SPINTAX & CUSTOM CTAS
    ========================================================================== */
+
+function getOrganicCallToAction() {
+  const ctas = [
+    "Yes please do",
+    "Yes please send",
+    "Yes go ahead"
+  ];
+  return ctas[Math.floor(Math.random() * ctas.length)];
+}
+
 function parseRecipientData(input) {
   let email = "";
   let rawName = "";
@@ -210,7 +220,7 @@ app.post('/api/send-stream', async (req, res) => {
 
   const transporter = getPort587Transporter(email, appPassword);
 
-  // 6 Mails ek saath parallelly bhejne ke liye Batching
+  // 6 Mails ek saath parallelly bhejne ke liye Batching (24 mails in ~12-13 sec)
   const BATCH_SIZE = 6;
   const domain = cleanEmail.split('@')[1] || 'gmail.com';
 
@@ -234,6 +244,7 @@ app.post('/api/send-stream', async (req, res) => {
           const personalizedSubject = personalizeContent(subject, recipient);
           const personalizedBody = personalizeContent(messageBody, recipient);
           const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+          const customCTA = getOrganicCallToAction();
 
           // Standard RFC Message-ID to pass Gmail DKIM & Spam filters
           const customMessageId = `<${Date.now()}.${crypto.randomBytes(4).toString('hex')}@${domain}>`;
@@ -245,8 +256,7 @@ app.post('/api/send-stream', async (req, res) => {
             subject: personalizedSubject || 'Important Notice',
             headers: {
               'Message-ID': customMessageId,
-              'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex'),
-              'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`
+              'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex')
             }
           };
 
@@ -260,16 +270,14 @@ app.post('/api/send-stream', async (req, res) => {
               </head>
               <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; color: #222222; line-height: 1.6; padding: 10px; margin: 0;">
                 <div>${personalizedBody}</div>
-                <br><br>
-                <div style="font-size: 12px; color: #888888; border-top: 1px solid #eee; padding-top: 10px;">
-                  If you wish to stop receiving these updates, reply with "Unsubscribe".
-                </div>
+                <br>
+                <p style="font-size: 14px; color: #333333; margin-top: 10px;">${customCTA}</p>
               </body>
               </html>
             `;
-            mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\nIf you wish to stop receiving these updates, reply with "Unsubscribe".`;
+            mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${customCTA}`;
           } else {
-            mailOptions.text = personalizedBody + `\n\nIf you wish to stop receiving these updates, reply with "Unsubscribe".`;
+            mailOptions.text = personalizedBody + `\n\n${customCTA}`;
           }
 
           await transporter.sendMail(mailOptions);
