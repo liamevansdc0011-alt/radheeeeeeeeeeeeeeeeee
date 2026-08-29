@@ -23,16 +23,18 @@ const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x000000000000
 const globalSession = { stopRequested: false };
 const poolMap = new Map();
 
-// Express Setup
+// Express Configuration
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(express.static(path.join(process.cwd(), 'public')));
 
-io.on('connection', () => {});
+io.on('connection', (socket) => {
+  socket.on('disconnect', () => {});
+});
 
 /* ==========================================================================
-   SECURITY & VERIFICATION
+   TURNSTILE BOT PROTECTION VERIFICATION
    ========================================================================== */
 async function verifyTurnstileToken(token, remoteIp) {
   if (!token || TURNSTILE_SECRET_KEY.startsWith('1x0000000000000000000000000000000AA')) {
@@ -58,7 +60,7 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   MANAGED SMTP POOL 
+   GMAIL TLS TRANSPORTER POOL (Port 587 STARTTLS)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -69,7 +71,7 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false, // TLS via STARTTLS
+      secure: false, // Standard STARTTLS
       requireTLS: true,
       auth: {
         user: cleanEmail,
@@ -87,7 +89,7 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   DATA PARSING & PERSONALIZATION
+   RECIPIENT NORMALIZATION & ADVANCED SPINTAX
    ========================================================================== */
 function parseRecipientData(input) {
   let email = '';
@@ -154,6 +156,7 @@ function parseSpintax(text) {
 function personalizeContent(template, recipient) {
   if (!template) return '';
   let content = parseSpintax(template);
+
   const fallback = recipient.firstName || recipient.name || 'there';
 
   content = content.replace(/{Name}/gi, recipient.name || fallback);
@@ -183,7 +186,7 @@ function createCleanPlainText(text) {
 }
 
 /* ==========================================================================
-   ROUTES
+   API ROUTES
    ========================================================================== */
 app.post('/api/auth', (req, res) => {
   const { password } = req.body;
@@ -213,13 +216,13 @@ app.post('/api/verify', async (req, res) => {
   } catch (error) {
     return res.status(401).json({
       success: false,
-      message: error.message || 'SMTP Auth Failed.'
+      message: error.message || 'SMTP Auth Failed. Check 16-char App Password.'
     });
   }
 });
 
 /* ==========================================================================
-   STREAMING ROUTE
+   PRIMARY INBOX 6-BATCH STREAMING ROUTE
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -271,6 +274,7 @@ app.post('/api/send-stream', async (req, res) => {
 
       try {
         if (idx > 0) {
+          // Intra-batch stagger (150ms - 250ms)
           await new Promise(resolve => setTimeout(resolve, Math.floor(150 + Math.random() * 100)));
         }
 
@@ -278,15 +282,21 @@ app.post('/api/send-stream', async (req, res) => {
         const personalizedBody = personalizeContent(messageBody, recipient);
         const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-        const cleanBodyText = isHtml ? personalizedBody : personalizedBody.replace(/\n/g, '<br>');
+        const cleanBodyText = isHtml
+          ? personalizedBody
+          : personalizedBody.replace(/\n/g, '<br>');
+
+        // 1-on-1 Clean Webmail UI formatting
+        const formattedHtml = `<div dir="ltr">${cleanBodyText}</div>`;
         const plainTextFormatted = createCleanPlainText(personalizedBody);
 
         const mailOptions = {
           from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
           to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
           replyTo: cleanEmail,
+          date: new Date(),
           subject: personalizedSubject || 'Hello',
-          html: `<div dir="ltr">${cleanBodyText}</div>`,
+          html: formattedHtml,
           text: plainTextFormatted
         };
 
@@ -312,6 +322,7 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     if (i + BATCH_SIZE < recipients.length) {
+      // Natural 800ms - 1200ms batch rest delay
       const batchDelay = Math.floor(800 + Math.random() * 400);
       await new Promise(resolve => setTimeout(resolve, batchDelay));
     }
@@ -327,13 +338,15 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, message: 'Sending process stopped' });
 });
 
+// UI Catch-All Route
 app.get('*', (req, res) => {
   res.sendFile(path.join(process.cwd(), 'public', 'index.html'));
 });
 
+// Start Server locally; Export for Vercel
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`🚀 Mailer server running on port ${PORT}`);
   });
 }
 
