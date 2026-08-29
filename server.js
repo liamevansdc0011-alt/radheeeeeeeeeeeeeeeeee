@@ -42,7 +42,7 @@ function getPort587Transporter(email, appPassword) {
       maxMessages: 100
     });
 
-    poolMap.set(key, transporter);
+    poolMap.set(key, transporter); 
   }
 
   return poolMap.get(key);
