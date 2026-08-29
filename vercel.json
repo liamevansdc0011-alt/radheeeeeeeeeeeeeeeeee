@@ -8,7 +8,12 @@
   ],
   "routes": [
     {
-      "handle": "filesystem"
+      "src": "/api/(.*)",
+      "dest": "server.js"
+    },
+    {
+      "src": "/socket.io/(.*)",
+      "dest": "server.js"
     },
     {
       "src": "/(.*)",
