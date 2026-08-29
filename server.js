@@ -17,7 +17,7 @@ const globalSession = { stopRequested: false };
 const poolMap = new Map();
 
 app.use(cors());
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
@@ -25,7 +25,8 @@ app.use(express.static(path.join(__dirname, "public")));
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
-  const key = `port587_${cleanEmail}_${appPassword}`;
+  const cleanPass = appPassword.replace(/\s+/g, '').trim();
+  const key = `port587_${cleanEmail}_${cleanPass}`;
 
   if (!poolMap.has(key)) {
     const transporter = nodemailer.createTransport({
@@ -35,12 +36,13 @@ function getPort587Transporter(email, appPassword) {
       requireTLS: true,
       auth: {
         user: cleanEmail,
-        pass: appPassword
+        pass: cleanPass
       },
       pool: true,
       maxConnections: 3,
       maxMessages: 500,
-      rateLimit: 1 // Max 1 mail per second
+      socketTimeout: 30000,
+      connectionTimeout: 30000
     });
 
     poolMap.set(key, transporter);
@@ -53,17 +55,15 @@ function getPort587Transporter(email, appPassword) {
    2. ANTI-SPAM & HUMAN BEHAVIOR ENGINES
    ========================================================================== */
 
-// Invisible HTML Fingerprint: Spammers rely on duplicate text. This adds invisible zero-width variations.
 function generateInvisibleFingerprint() {
   const zwChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
   let fingerprint = '';
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 6; i++) {
     fingerprint += zwChars[Math.floor(Math.random() * zwChars.length)];
   }
   return fingerprint;
 }
 
-// Organic Closing Lines: Increases user response rate automatically
 function getOrganicCallToAction() {
   const ctas = [
     "Would love to hear your thoughts on this.",
@@ -109,9 +109,9 @@ function parseRecipientData(input) {
 
   const formattedName = rawName
     ? rawName.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
-    : "Valued Partner";
+    : "";
 
-  const firstName = formattedName.split(' ')[0] || "there";
+  const firstName = formattedName ? formattedName.split(' ')[0] : "there";
   const domain = email.includes('@') ? email.split('@')[1] : "";
 
   return {
@@ -124,30 +124,32 @@ function parseRecipientData(input) {
 
 function parseSpintax(text) {
   if (!text) return "";
-  let spun = text;
-  const regex = /{([^{}]+)}/g;
+  let spun = String(text);
+  const regex = /\{([^{}]+)\}/s;
   let iterations = 0;
 
-  while (regex.test(spun) && iterations < 10) {
+  while (regex.test(spun) && iterations < 25) {
     spun = spun.replace(regex, (_, choices) => {
-      if (!choices.includes('|')) return `{${choices}}`;
+      if (!choices.includes('|')) return choices;
       const options = choices.split('|');
-      return options[Math.floor(Math.random() * options.length)];
+      const pick = options[Math.floor(Math.random() * options.length)];
+      return pick ? pick.trim() : '';
     });
     iterations++;
   }
-  return spun;
+  return spun.replace(/[\{\}]/g, '').trim();
 }
 
 function personalizeContent(template, recipient) {
   if (!template) return "";
   let content = parseSpintax(template);
+  const fallback = recipient.firstName || recipient.name || 'there';
 
   const currentDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
-  content = content.replace(/{Name}/gi, recipient.name);
-  content = content.replace(/{FirstName}/gi, recipient.firstName);
-  content = content.replace(/{First_Name}/gi, recipient.firstName);
+  content = content.replace(/{Name}/gi, recipient.name || fallback);
+  content = content.replace(/{FirstName}/gi, recipient.firstName || fallback);
+  content = content.replace(/{First_Name}/gi, recipient.firstName || fallback);
   content = content.replace(/{Email}/gi, recipient.email);
   content = content.replace(/{Domain}/gi, recipient.domain);
   content = content.replace(/{Date}/gi, currentDate);
@@ -160,10 +162,10 @@ function createPlainTextFromHtml(html) {
   return html
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<br\s*[\/]?>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
     .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
+    .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
@@ -203,7 +205,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Exactly 1-Second Speed + Guaranteed Inbox Routing)
+   4. STREAMING ENGINE (Clean UTC Timestamping & Clean Headers)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -220,12 +222,11 @@ app.post('/api/send-stream', async (req, res) => {
   }
 
   const cleanEmail = email.toLowerCase().trim();
-  const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
-  const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
+  const cleanSenderName = (senderName || "").replace(/["\r\n]/g, "").trim();
   globalSession.stopRequested = false;
 
   const keepAlivePing = setInterval(() => {
-    res.write(': keep-alive\n\n');
+    try { res.write(': keep-alive\n\n'); } catch {}
   }, 4000);
 
   const transporter = getPort587Transporter(email, appPassword);
@@ -246,36 +247,34 @@ app.post('/api/send-stream', async (req, res) => {
 
       const invisibleHash = generateInvisibleFingerprint();
       const organicCTA = getOrganicCallToAction();
-      
-      // Unique Compliant Message-ID
-      const messageId = `<${crypto.randomBytes(12).toString('hex')}.${Date.now()}@${domainPart}>`;
+
+      // STRICT UTC RFC2822 Date format fixing "Incorrect Device Time" issue
+      const exactUtcDate = new Date().toUTCString();
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
-        to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
+        to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
-        subject: personalizedSubject,
-        messageId: messageId,
-        date: new Date(),
+        date: exactUtcDate,
+        subject: personalizedSubject || 'Hello',
         headers: {
-          'X-Mailer': 'Microsoft Outlook 16.0',
-          'X-Priority': '3 (Normal)',
-          'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
-          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
+          'X-Report-Abuse-To': cleanEmail
         }
       };
 
       if (isHtml) {
         const bodyWithPsAndHash = `
-          ${personalizedBody}
-          <br><br>
-          <p style="font-size: 13px; color: #333333; margin-top: 15px;">${organicCTA}</p>
-          <span style="display:none !important; font-size:0px; line-height:0px; opacity:0;">${invisibleHash}</span>
+          <div dir="ltr">
+            ${personalizedBody}
+            <br><br>
+            <p style="font-size: 13px; color: #444444; margin-top: 15px;">${organicCTA}</p>
+            <span style="display:none !important; font-size:0px; line-height:0px; opacity:0; color:transparent;">${invisibleHash}</span>
+          </div>
         `;
         mailOptions.html = bodyWithPsAndHash;
         mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}`;
       } else {
-        mailOptions.text = personalizedBody + `\n\n${organicCTA}` + invisibleHash;
+        mailOptions.text = personalizedBody + `\n\n${organicCTA}` + `\n` + invisibleHash;
       }
 
       await transporter.sendMail(mailOptions);
@@ -286,9 +285,10 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Exact 1-Second Delay Per Mail
+    // Dynamic 1000ms - 1500ms delay to imitate real human typing/sending speed
     if (i < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const naturalDelay = Math.floor(1000 + Math.random() * 500);
+      await new Promise(resolve => setTimeout(resolve, naturalDelay));
     }
   }
 
@@ -303,7 +303,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [1-Second Inbox Engine Active]`);
+  console.log(`Server running on Port ${PORT} [UTC Time Synchronization Fixed]`);
 });
 
 export default app;
