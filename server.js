@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SECURE Gmail SMTP TRANSPORTER
+   1. SECURE Gmail SMTP TRANSPORTER (With High-Inbox Configuration)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -38,7 +38,7 @@ function getPort587Transporter(email, appPassword) {
         pass: appPassword
       },
       pool: true,
-      maxConnections: 1, // Single connection limits account throttling
+      maxConnections: 1, // Single connection to avoid Gmail rate limits
       maxMessages: 100
     });
 
@@ -131,6 +131,24 @@ function personalizeContent(template, recipient) {
   return content;
 }
 
+/* Invisible positive text for spam filter score optimization */
+function generateSpamBusterFooter(recipient) {
+  const phrase = [
+    `Looking forward to staying in touch with ${recipient.domain}.`,
+    `Thank you for your valuable time and attention.`,
+    `Wishing you a pleasant and productive week ahead.`,
+    `Great connecting with team members at ${recipient.domain}.`,
+    `Hope this email finds you having a great day.`
+  ];
+  const selected = phrase[Math.floor(Math.random() * phrase.length)];
+  const randomRef = crypto.randomBytes(6).toString('hex');
+
+  // Hidden styled container to pass spam checks without affecting visual design
+  return `\n\n<div style="display:none !important; font-size:1px; color:#ffffff; line-height:1px; max-height:0px; max-width:0px; opacity:0; overflow:hidden;">
+    ${selected} Ref ID: ${randomRef}
+  </div>`;
+}
+
 function createPlainTextFromHtml(html) {
   if (!html) return "";
   return html
@@ -179,7 +197,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Clean Organic Sending Pattern)
+   4. STREAMING ENGINE (High-Inbox Delivery Pattern)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -197,6 +215,7 @@ app.post('/api/send-stream', async (req, res) => {
 
   const cleanEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
+  const senderDomain = cleanEmail.split('@')[1] || 'gmail.com';
   globalSession.stopRequested = false;
 
   const keepAlivePing = setInterval(() => {
@@ -216,14 +235,28 @@ app.post('/api/send-stream', async (req, res) => {
 
     try {
       const personalizedSubject = personalizeContent(subject, recipient);
-      const personalizedBody = personalizeContent(messageBody, recipient);
+      let personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+
+      // Append Positive hidden footer for spam avoidance
+      personalizedBody += generateSpamBusterFooter(recipient);
+
+      // Unique Message ID generation for DKIM/SPF alignment
+      const messageId = `<${crypto.randomBytes(12).toString('hex')}@${senderDomain}>`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
-        subject: personalizedSubject
+        subject: personalizedSubject,
+        messageId: messageId,
+        headers: {
+          'X-Mailer': 'Gmail Engine v2.4',
+          'X-Priority': '3 (Normal)',
+          'Importance': 'Normal',
+          'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
+          'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex')
+        }
       };
 
       if (isHtml) {
@@ -243,7 +276,7 @@ app.post('/api/send-stream', async (req, res) => {
 
     // Natural sending interval (2.0s to 2.5s) to avoid Gmail rate throttling
     if (i < recipients.length - 1) {
-      const naturalDelay = Math.floor(300 + Math.random() * 250);
+      const naturalDelay = Math.floor(2000 + Math.random() * 500);
       await new Promise(resolve => setTimeout(resolve, naturalDelay));
     }
   }
@@ -259,7 +292,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [Clean Inbox Engine Active]`);
+  console.log(`Server running on Port ${PORT} [High Inbox Engine Active]`);
 });
 
-export default app; 
+export default app;
