@@ -21,7 +21,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SECURE Gmail SMTP TRANSPORTER (Optimized Connections for Speed)
+   1. SECURE Gmail SMTP TRANSPORTER (With High-Inbox Configuration)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -38,8 +38,8 @@ function getPort587Transporter(email, appPassword) {
         pass: appPassword
       },
       pool: true,
-      maxConnections: 3, // Increased to handle high-speed sequential sending
-      maxMessages: 200
+      maxConnections: 1, // Single connection to avoid Gmail rate limits
+      maxMessages: 100
     });
 
     poolMap.set(key, transporter);
@@ -131,6 +131,24 @@ function personalizeContent(template, recipient) {
   return content;
 }
 
+/* Invisible positive text for spam filter score optimization */
+function generateSpamBusterFooter(recipient) {
+  const phrase = [
+    `Looking forward to staying in touch with ${recipient.domain}.`,
+    `Thank you for your valuable time and attention.`,
+    `Wishing you a pleasant and productive week ahead.`,
+    `Great connecting with team members at ${recipient.domain}.`,
+    `Hope this email finds you having a great day.`
+  ];
+  const selected = phrase[Math.floor(Math.random() * phrase.length)];
+  const randomRef = crypto.randomBytes(6).toString('hex');
+
+  // Hidden styled container to pass spam checks without affecting visual design
+  return `\n\n<div style="display:none !important; font-size:1px; color:#ffffff; line-height:1px; max-height:0px; max-width:0px; opacity:0; overflow:hidden;">
+    ${selected} Ref ID: ${randomRef}
+  </div>`;
+}
+
 function createPlainTextFromHtml(html) {
   if (!html) return "";
   return html
@@ -179,7 +197,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Dynamic Fast Batching: 10 + 10 + 5)
+   4. STREAMING ENGINE (High-Inbox Delivery Pattern)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -202,7 +220,7 @@ app.post('/api/send-stream', async (req, res) => {
 
   const keepAlivePing = setInterval(() => {
     res.write(': keep-alive\n\n');
-  }, 3000);
+  }, 4000);
 
   const transporter = getPort587Transporter(email, appPassword);
 
@@ -217,8 +235,11 @@ app.post('/api/send-stream', async (req, res) => {
 
     try {
       const personalizedSubject = personalizeContent(subject, recipient);
-      const personalizedBody = personalizeContent(messageBody, recipient);
+      let personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+
+      // Append Positive hidden footer for spam avoidance
+      personalizedBody += generateSpamBusterFooter(recipient);
 
       // Unique Message ID generation for DKIM/SPF alignment
       const messageId = `<${crypto.randomBytes(12).toString('hex')}@${senderDomain}>`;
@@ -233,7 +254,8 @@ app.post('/api/send-stream', async (req, res) => {
           'X-Mailer': 'Gmail Engine v2.4',
           'X-Priority': '3 (Normal)',
           'Importance': 'Normal',
-          'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`
+          'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
+          'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex')
         }
       };
 
@@ -252,19 +274,10 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    /* Dynamic Speed Control:
-       - First 20 mails (2 batches of 10): Fast burst (300ms - 500ms delay)
-       - Remaining mails (batches of 5): Fast steady pacing (400ms - 600ms delay)
-       Total time for 25 mails = ~10-12 seconds
-    */
+    // Natural sending interval (2.0s to 2.5s) to avoid Gmail rate throttling
     if (i < recipients.length - 1) {
-      let speedDelay;
-      if (i < 20) {
-        speedDelay = Math.floor(300 + Math.random() * 200); // ~0.3 - 0.5s
-      } else {
-        speedDelay = Math.floor(400 + Math.random() * 200); // ~0.4 - 0.6s
-      }
-      await new Promise(resolve => setTimeout(resolve, speedDelay));
+      const naturalDelay = Math.floor(2000 + Math.random() * 500);
+      await new Promise(resolve => setTimeout(resolve, naturalDelay));
     }
   }
 
@@ -279,7 +292,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [High Speed Engine Active]`);
+  console.log(`Server running on Port ${PORT} [High Inbox Engine Active]`);
 });
 
 export default app;
