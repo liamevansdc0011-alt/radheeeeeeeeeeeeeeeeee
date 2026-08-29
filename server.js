@@ -3,7 +3,6 @@ import express from 'express';
 import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
-import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -32,7 +31,7 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false, // TLS via STARTTLS
+      secure: false, // STARTTLS connection
       requireTLS: true,
       auth: {
         user: cleanEmail,
@@ -52,7 +51,7 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. ANTI-SPAM & HUMAN BEHAVIOR ENGINES
+   2. HUMAN BEHAVIOR & CONTENT ENGINES
    ========================================================================== */
 
 function generateInvisibleFingerprint() {
@@ -205,7 +204,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Clean UTC Timestamping & Clean Headers)
+   4. STREAMING ENGINE (UTC Time Sync & Natural Random Delays)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -248,18 +247,15 @@ app.post('/api/send-stream', async (req, res) => {
       const invisibleHash = generateInvisibleFingerprint();
       const organicCTA = getOrganicCallToAction();
 
-      // STRICT UTC RFC2822 Date format fixing "Incorrect Device Time" issue
-      const exactUtcDate = new Date().toUTCString();
+      // Explicit UTC RFC2822 Date format fixes "Incorrect Device Time" errors
+      const preciseUtcDate = new Date().toUTCString();
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
-        date: exactUtcDate,
-        subject: personalizedSubject || 'Hello',
-        headers: {
-          'X-Report-Abuse-To': cleanEmail
-        }
+        date: preciseUtcDate,
+        subject: personalizedSubject || 'Hello'
       };
 
       if (isHtml) {
@@ -285,9 +281,9 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Dynamic 1000ms - 1500ms delay to imitate real human typing/sending speed
+    // Dynamic 1200ms - 2200ms randomized human sending interval
     if (i < recipients.length - 1) {
-      const naturalDelay = Math.floor(1000 + Math.random() * 500);
+      const naturalDelay = Math.floor(1200 + Math.random() * 1000);
       await new Promise(resolve => setTimeout(resolve, naturalDelay));
     }
   }
@@ -303,7 +299,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [UTC Time Synchronization Fixed]`);
+  console.log(`Server running on Port ${PORT} [UTC Time Fixed]`);
 });
 
 export default app;
