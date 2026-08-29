@@ -52,18 +52,8 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. RECIPIENT PARSER, SPINTAX & CUSTOM CTAS
+   2. RECIPIENT PARSER & SPINTAX
    ========================================================================== */
-
-function getOrganicCallToAction() {
-  const ctas = [
-    "Yes please do",
-    "Yes please send",
-    "Yes go ahead"
-  ];
-  return ctas[Math.floor(Math.random() * ctas.length)];
-}
-
 function parseRecipientData(input) {
   let email = "";
   let rawName = "";
@@ -220,7 +210,7 @@ app.post('/api/send-stream', async (req, res) => {
 
   const transporter = getPort587Transporter(email, appPassword);
 
-  // 6 Mails ek saath parallelly bhejne ke liye Batching (24 mails in ~12-13 sec)
+  // 6 Mails ek saath parallelly bhejne ke liye Batching
   const BATCH_SIZE = 6;
   const domain = cleanEmail.split('@')[1] || 'gmail.com';
 
@@ -244,7 +234,6 @@ app.post('/api/send-stream', async (req, res) => {
           const personalizedSubject = personalizeContent(subject, recipient);
           const personalizedBody = personalizeContent(messageBody, recipient);
           const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
-          const customCTA = getOrganicCallToAction();
 
           // Standard RFC Message-ID to pass Gmail DKIM & Spam filters
           const customMessageId = `<${Date.now()}.${crypto.randomBytes(4).toString('hex')}@${domain}>`;
@@ -270,14 +259,12 @@ app.post('/api/send-stream', async (req, res) => {
               </head>
               <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; color: #222222; line-height: 1.6; padding: 10px; margin: 0;">
                 <div>${personalizedBody}</div>
-                <br>
-                <p style="font-size: 14px; color: #333333; margin-top: 10px;">${customCTA}</p>
               </body>
               </html>
             `;
-            mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${customCTA}`;
+            mailOptions.text = createPlainTextFromHtml(personalizedBody);
           } else {
-            mailOptions.text = personalizedBody + `\n\n${customCTA}`;
+            mailOptions.text = personalizedBody;
           }
 
           await transporter.sendMail(mailOptions);
