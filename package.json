@@ -1,20 +1,24 @@
 {
-  "name": "high-inbox-email-sender",
-  "version": "1.0.0",
-  "description": "Anti-Spam Optimized Bulk Email Streamer",
-  "main": "server.js",
+  "name": "secure-mail-console",
+  "private": true,
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "nodemailer": "^6.9.13"
+    "express": "^4.21.2",
+    "nodemailer": "^6.9.13",
+    "socket.io": "^4.8.1"
   },
-  "engines": {
-    "node": ">=18.0.0"
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0"
   }
 }
