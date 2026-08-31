@@ -12,7 +12,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 
-const globalSession = { stopRequested: false };
+// User-specific sessions ko track karne ke liye (Concurrency Fix)
+const activeSessions = new Map();
 const poolMap = new Map();
 
 app.use(cors());
@@ -20,7 +21,7 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. HIGH DELIVERABILITY TRANSPORTER (STARTTLS + SMTP POOL)
+   1. HIGH DELIVERABILITY TRANSPORTER (GMAIL SECURE POOL)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -31,17 +32,17 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false, // STARTTLS connection
+      secure: false, // STARTTLS
       requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 500,
-      socketTimeout: 30000,
-      connectionTimeout: 30000
+      maxConnections: 1, // Spam protection: Gmail App password par max 1-2 active connections hi rakhein
+      maxMessages: 100,
+      socketTimeout: 45000,
+      connectionTimeout: 45000
     });
 
     poolMap.set(key, transporter);
@@ -51,18 +52,10 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. HUMAN BEHAVIOR & CONTENT ENGINES
+   2. ANTI-SPAM & NATURAL CONTENT ENGINES (NO INVISIBLE TRICKS)
    ========================================================================== */
 
-function generateInvisibleFingerprint() {
-  const zwChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
-  let fingerprint = '';
-  for (let i = 0; i < 6; i++) {
-    fingerprint += zwChars[Math.floor(Math.random() * zwChars.length)];
-  }
-  return fingerprint;
-}
-
+// 100% Safe CTA: Har mail mein organic signature variation ke liye
 function getOrganicCallToAction() {
   const ctas = [
     "Would love to hear your thoughts on this.",
@@ -173,6 +166,9 @@ function createPlainTextFromHtml(html) {
     .trim();
 }
 
+// Utility delay function
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 /* ==========================================================================
    3. API ROUTES
    ========================================================================== */
@@ -204,7 +200,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (UTC Time Sync & Natural Random Delays)
+   4. HIGH-INBOX STREAMING ENGINE (Batching 6 x 4 Logic & Anti-Spam Headers)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -222,7 +218,9 @@ app.post('/api/send-stream', async (req, res) => {
 
   const cleanEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || "").replace(/["\r\n]/g, "").trim();
-  globalSession.stopRequested = false;
+  
+  // Set session for this email
+  activeSessions.set(cleanEmail, true);
 
   const keepAlivePing = setInterval(() => {
     try { res.write(': keep-alive\n\n'); } catch {}
@@ -230,8 +228,12 @@ app.post('/api/send-stream', async (req, res) => {
 
   const transporter = getPort587Transporter(email, appPassword);
 
+  const BATCH_SIZE = 6; // HAR BATCH MEIN 6 MAILS
+  let sentCount = 0;
+
   for (let i = 0; i < recipients.length; i++) {
-    if (globalSession.stopRequested) {
+    // Check if user requested stop
+    if (!activeSessions.get(cleanEmail)) {
       res.write(`data: ${JSON.stringify({ success: false, error: "Stopped by User" })}\n\n`);
       break;
     }
@@ -243,37 +245,43 @@ app.post('/api/send-stream', async (req, res) => {
       const personalizedSubject = personalizeContent(subject, recipient);
       const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
-
-      const invisibleHash = generateInvisibleFingerprint();
       const organicCTA = getOrganicCallToAction();
-
-      // Explicit UTC RFC2822 Date format fixes "Incorrect Device Time" errors
       const preciseUtcDate = new Date().toUTCString();
+
+      // Generating unique Message-ID (Anti-Spam standard requirement)
+      const domainName = cleanEmail.split('@')[1] || 'gmail.com';
+      const customMessageId = `<${Date.now()}.${Math.random().toString(36).substring(2, 8)}@${domainName}>`;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
         date: preciseUtcDate,
-        subject: personalizedSubject || 'Hello'
+        subject: personalizedSubject || 'Hello',
+        headers: {
+          'Message-ID': customMessageId,
+          'X-Mailer': 'Microsoft Outlook 16.0', // Standard mail client mimic
+          'X-Priority': '3', // Normal Priority
+          'Importance': 'Normal'
+        }
       };
 
       if (isHtml) {
-        const bodyWithPsAndHash = `
-          <div dir="ltr">
+        mailOptions.html = `
+          <div dir="ltr" style="font-family: Arial, sans-serif; font-size: 14px; color: #222222; line-height: 1.5;">
             ${personalizedBody}
             <br><br>
-            <p style="font-size: 13px; color: #444444; margin-top: 15px;">${organicCTA}</p>
-            <span style="display:none !important; font-size:0px; line-height:0px; opacity:0; color:transparent;">${invisibleHash}</span>
+            <p style="font-size: 13px; color: #555555; margin-top: 15px;">${organicCTA}</p>
           </div>
         `;
-        mailOptions.html = bodyWithPsAndHash;
         mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}`;
       } else {
-        mailOptions.text = personalizedBody + `\n\n${organicCTA}` + `\n` + invisibleHash;
+        mailOptions.text = personalizedBody + `\n\n${organicCTA}`;
       }
 
       await transporter.sendMail(mailOptions);
+      sentCount++;
+
       res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name })}\n\n`);
 
     } catch (err) {
@@ -281,25 +289,39 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // Dynamic 1200ms - 2200ms randomized human sending interval
+    // =========================================================================
+    // 6 X 4 BATCHING & HUMAN DELAY LOGIC (Gmail Anti-Bot Friendly)
+    // =========================================================================
     if (i < recipients.length - 1) {
-      const naturalDelay = Math.floor(1200 + Math.random() * 1000);
-      await new Promise(resolve => setTimeout(resolve, naturalDelay));
+      if (sentCount % BATCH_SIZE === 0) {
+        // Har 6 Mails ke baad pause (Batch Gap: 4 se 8 Seconds ka Natural Break)
+        const batchPause = Math.floor(4000 + Math.random() * 4000);
+        console.log(`Batch of ${BATCH_SIZE} completed. Pausing for ${batchPause / 1000}s...`);
+        await sleep(batchPause);
+      } else {
+        // Normal Email Delay (Human Speed: 2.5s - 5.5s)
+        const perEmailDelay = Math.floor(2500 + Math.random() * 3000);
+        await sleep(perEmailDelay);
+      }
     }
   }
 
   clearInterval(keepAlivePing);
+  activeSessions.delete(cleanEmail);
   res.write("data: [DONE]\n\n");
   res.end();
 });
 
 app.post('/api/stop', (req, res) => {
-  globalSession.stopRequested = true;
-  res.json({ success: true, message: "Sending process stopped" });
+  const { email } = req.body;
+  if (email) {
+    activeSessions.set(email.toLowerCase().trim(), false);
+  }
+  res.json({ success: true, message: "Sending process stopped safely" });
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [UTC Time Fixed]`);
+  console.log(`Server running safely on Port ${PORT}`);
 });
 
 export default app;
