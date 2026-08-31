@@ -4,7 +4,6 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +20,7 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. HIGH-SPEED INBOX TRANSPORTER (MAX POOL CONNECTION)
+   1. HIGH DELIVERABILITY TRANSPORTER (STARTTLS + SMTP POOL)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -32,17 +31,17 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false, // STARTTLS
+      secure: false, // STARTTLS connection
       requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 6, // Fast parallel processing
+      maxConnections: 3,
       maxMessages: 500,
-      socketTimeout: 20000,
-      connectionTimeout: 20000
+      socketTimeout: 30000,
+      connectionTimeout: 30000
     });
 
     poolMap.set(key, transporter);
@@ -52,8 +51,29 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. RECIPIENT PARSER & SPINTAX
+   2. HUMAN BEHAVIOR & CONTENT ENGINES
    ========================================================================== */
+
+function generateInvisibleFingerprint() {
+  const zwChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
+  let fingerprint = '';
+  for (let i = 0; i < 6; i++) {
+    fingerprint += zwChars[Math.floor(Math.random() * zwChars.length)];
+  }
+  return fingerprint;
+}
+
+function getOrganicCallToAction() {
+  const ctas = [
+    "Would love to hear your thoughts on this.",
+    "Let me know if this sounds relevant to you right now.",
+    "Feel free to reply directly to this mail if you have any questions.",
+    "Looking forward to your thoughts whenever you get a moment.",
+    "Do you have 2 minutes for a brief response on this?"
+  ];
+  return ctas[Math.floor(Math.random() * ctas.length)];
+}
+
 function parseRecipientData(input) {
   let email = "";
   let rawName = "";
@@ -184,7 +204,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. ULTRA-FAST INBOX BATCH STREAMING ENGINE
+   4. STREAMING ENGINE (UTC Time Sync & Natural Random Delays)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -206,81 +226,65 @@ app.post('/api/send-stream', async (req, res) => {
 
   const keepAlivePing = setInterval(() => {
     try { res.write(': keep-alive\n\n'); } catch {}
-  }, 3000);
+  }, 4000);
 
   const transporter = getPort587Transporter(email, appPassword);
 
-  // 6 Mails ek saath parallelly bhejne ke liye Batching
-  const BATCH_SIZE = 6;
-  const domain = cleanEmail.split('@')[1] || 'gmail.com';
-
-  for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
+  for (let i = 0; i < recipients.length; i++) {
     if (globalSession.stopRequested) {
       res.write(`data: ${JSON.stringify({ success: false, error: "Stopped by User" })}\n\n`);
       break;
     }
 
-    const currentBatch = recipients.slice(i, i + BATCH_SIZE);
+    const recipient = parseRecipientData(recipients[i]);
+    if (!recipient.email) continue;
 
-    // Parallel send execution for maximum speed
-    await Promise.all(
-      currentBatch.map(async (rawRecipient) => {
-        if (globalSession.stopRequested) return;
+    try {
+      const personalizedSubject = personalizeContent(subject, recipient);
+      const personalizedBody = personalizeContent(messageBody, recipient);
+      const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-        const recipient = parseRecipientData(rawRecipient);
-        if (!recipient.email) return;
+      const invisibleHash = generateInvisibleFingerprint();
+      const organicCTA = getOrganicCallToAction();
 
-        try {
-          const personalizedSubject = personalizeContent(subject, recipient);
-          const personalizedBody = personalizeContent(messageBody, recipient);
-          const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+      // Explicit UTC RFC2822 Date format fixes "Incorrect Device Time" errors
+      const preciseUtcDate = new Date().toUTCString();
 
-          // Standard RFC Message-ID to pass Gmail DKIM & Spam filters
-          const customMessageId = `<${Date.now()}.${crypto.randomBytes(4).toString('hex')}@${domain}>`;
+      const mailOptions = {
+        from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
+        to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
+        replyTo: cleanEmail,
+        date: preciseUtcDate,
+        subject: personalizedSubject || 'Hello'
+      };
 
-          const mailOptions = {
-            from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
-            to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
-            replyTo: cleanEmail,
-            subject: personalizedSubject || 'Important Notice',
-            headers: {
-              'Message-ID': customMessageId,
-              'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex')
-            }
-          };
+      if (isHtml) {
+        const bodyWithPsAndHash = `
+          <div dir="ltr">
+            ${personalizedBody}
+            <br><br>
+            <p style="font-size: 13px; color: #444444; margin-top: 15px;">${organicCTA}</p>
+            <span style="display:none !important; font-size:0px; line-height:0px; opacity:0; color:transparent;">${invisibleHash}</span>
+          </div>
+        `;
+        mailOptions.html = bodyWithPsAndHash;
+        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}`;
+      } else {
+        mailOptions.text = personalizedBody + `\n\n${organicCTA}` + `\n` + invisibleHash;
+      }
 
-          if (isHtml) {
-            mailOptions.html = `
-              <!DOCTYPE html>
-              <html>
-              <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              </head>
-              <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; color: #222222; line-height: 1.6; padding: 10px; margin: 0;">
-                <div>${personalizedBody}</div>
-              </body>
-              </html>
-            `;
-            mailOptions.text = createPlainTextFromHtml(personalizedBody);
-          } else {
-            mailOptions.text = personalizedBody;
-          }
+      await transporter.sendMail(mailOptions);
+      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name })}\n\n`);
 
-          await transporter.sendMail(mailOptions);
-          res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name })}\n\n`);
+    } catch (err) {
+      console.error(`Send Failure [${recipient.email}]:`, err.message);
+      res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
+    }
 
-        } catch (err) {
-          console.error(`Send Failure [${recipient.email}]:`, err.message);
-          res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
-        }
-      })
-    );
-
-    // Dynamic 800ms - 1500ms delay between batches for ~12-13 sec total runtime for 24 mails
-    if (i + BATCH_SIZE < recipients.length) {
-      const batchDelay = Math.floor(800 + Math.random() * 700);
-      await new Promise(resolve => setTimeout(resolve, batchDelay));
+    // Dynamic 1200ms - 2200ms randomized human sending interval
+    if (i < recipients.length - 1) {
+      const naturalDelay = Math.floor(1200 + Math.random() * 1000);
+      await new Promise(resolve => setTimeout(resolve, naturalDelay));
     }
   }
 
@@ -295,7 +299,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [High-Speed Inbox Engine Ready]`);
+  console.log(`Server running on Port ${PORT} [UTC Time Fixed]`);
 });
 
 export default app;
