@@ -1,12 +1,11 @@
 {
-  "name": "email-sender-service",
+  "name": "secure-mail-console",
+  "private": true,
   "version": "1.0.0",
   "type": "module",
-  "main": "server.js",
-  "private": true,
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "start": "node server.js"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -22,4 +21,4 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0"
   }
-}
+} 
