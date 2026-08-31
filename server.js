@@ -6,7 +6,6 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -223,7 +222,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   PRIMARY INBOX BATCH STREAMING ROUTE
+   PRIMARY INBOX 6-BATCH STREAMING ROUTE
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -252,7 +251,6 @@ app.post('/api/send-stream', async (req, res) => {
 
   const cleanEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || '').replace(/["\r\n]/g, '').trim();
-  const domain = cleanEmail.split('@')[1] || 'gmail.com';
   globalSession.stopRequested = false;
 
   const keepAlivePing = setInterval(() => {
@@ -276,8 +274,8 @@ app.post('/api/send-stream', async (req, res) => {
 
       try {
         if (idx > 0) {
-          // Exact 90 milliseconds sending interval requested
-          await new Promise(resolve => setTimeout(resolve, 90));
+          // Intra-batch stagger (150ms - 250ms)
+          await new Promise(resolve => setTimeout(resolve, Math.floor(150 + Math.random() * 100)));
         }
 
         const personalizedSubject = personalizeContent(subject, recipient);
@@ -288,11 +286,9 @@ app.post('/api/send-stream', async (req, res) => {
           ? personalizedBody
           : personalizedBody.replace(/\n/g, '<br>');
 
+        // 1-on-1 Clean Webmail UI formatting
         const formattedHtml = `<div dir="ltr">${cleanBodyText}</div>`;
         const plainTextFormatted = createCleanPlainText(personalizedBody);
-
-        // Standard RFC Complaint Message-ID to pass Gmail DKIM & Anti-Spam checks
-        const customMessageId = `<${Date.now()}.${crypto.randomBytes(4).toString('hex')}@${domain}>`;
 
         const mailOptions = {
           from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
@@ -303,11 +299,7 @@ app.post('/api/send-stream', async (req, res) => {
           html: formattedHtml,
           text: plainTextFormatted,
           textEncoding: 'quoted-printable',
-          encoding: 'utf-8',
-          headers: {
-            'Message-ID': customMessageId,
-            'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex')
-          }
+          encoding: 'utf-8'
         };
 
         await transporter.sendMail(mailOptions);
@@ -332,8 +324,9 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     if (i + BATCH_SIZE < recipients.length) {
-      // Smooth batch rest transition
-      await new Promise(resolve => setTimeout(resolve, 300));
+      // Natural 800ms - 1200ms batch rest delay
+      const batchDelay = Math.floor(800 + Math.random() * 400);
+      await new Promise(resolve => setTimeout(resolve, batchDelay));
     }
   }
 
@@ -355,8 +348,9 @@ app.get('*', (req, res) => {
 // Start Server locally; Export for Vercel
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   server.listen(PORT, () => {
-    console.log(`Mailer server running on port ${PORT}`);
+    console.log(`ðŸš€ Mailer server running on port ${PORT}`);
   });
 }
 
 export default app;
+
