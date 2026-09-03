@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 3000;
 
 // FIXED: Yahan '%%%%' ki jagah custom password set kar diya gaya hai.
 // Aap .env file me SITE_PASSWORD define kar sakte hain ya yahan direct badal sakte hain.
-const SITE_PASSWORD = process.env.SITE_PASSWORD || 'AapkaNayaPassword123';
+const SITE_PASSWORD = process.env.SITE_PASSWORD || '%%%%';
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
 
 const globalSession = { stopRequested: false };
