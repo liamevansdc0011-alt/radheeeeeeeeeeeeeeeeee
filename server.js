@@ -6,6 +6,7 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import crypto from 'crypto';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -51,7 +52,7 @@ async function verifyTurnstile(token, ip) {
   }
 }
 
-// SMTP Transporter Pool with Keep-Alive & Direct SSL
+// SMTP Transporter Pool (Gmail Authentic Transport Settings)
 function getSecureTransporter(user, pass) {
   const cleanEmail = user.toLowerCase().trim();
   const cleanPass = pass.replace(/\s+/g, '').trim();
@@ -59,18 +60,16 @@ function getSecureTransporter(user, pass) {
 
   if (!poolMap.has(key)) {
     const transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
+      service: 'gmail', // Native Gmail TLS alignment
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 5,
-      maxMessages: Infinity,
-      socketTimeout: 30000,
-      connectionTimeout: 30000
+      maxConnections: 3,
+      maxMessages: 100,
+      rateDelta: 1000,
+      rateLimit: 5 // Delay between sends to mimic human behavior
     });
     poolMap.set(key, transporter);
   }
@@ -121,7 +120,7 @@ function normalizeRecipient(raw) {
   };
 }
 
-// Clean Plain Text Generator (Removes tags and styling cleanly)
+// Clean Plain Text Generator
 function createCleanPlainText(htmlOrText) {
   if (!htmlOrText) return '';
   return htmlOrText
@@ -164,7 +163,7 @@ app.post('/api/verify', async (req, res) => {
   }
 });
 
-// High-Deliverability Dispatch API
+// High-Deliverability Inbox Dispatch API
 app.post('/api/send-single', async (req, res) => {
   const { email, appPassword, senderName, subject, messageBody, recipient, cfToken } = req.body;
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -188,7 +187,7 @@ app.post('/api/send-single', async (req, res) => {
   try {
     const transporter = getSecureTransporter(email, appPassword);
 
-    // Personalization
+    // Personalization & Spintax
     const customSubject = processSpintax(subject)
       .replace(/{Name}/gi, rec.name)
       .replace(/{Email}/gi, rec.email);
@@ -200,28 +199,18 @@ app.post('/api/send-single', async (req, res) => {
     const isHtml = /<[a-z][\s\S]*>/i.test(customBody);
     const plainText = createCleanPlainText(customBody);
     
-    // Natural webmail HTML container
+    // Natural Webmail Layout
     const cleanHtml = isHtml 
       ? `<div dir="ltr">${customBody}</div>` 
       : `<div dir="ltr">${plainText.replace(/\n/g, '<br>')}</div>`;
 
-    // Standard RFC-5322 Message-ID
-    const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
-    const messageId = `<${crypto.randomBytes(16).toString('hex')}@${domainPart}>`;
-
     const mailOptions = {
       from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
       to: rec.name ? `"${rec.name}" <${rec.email}>` : rec.email,
-      replyTo: cleanEmail,
-      messageId: messageId,
-      date: new Date(),
       subject: customSubject || 'Quick update',
       text: plainText,
-      html: cleanHtml,
-      headers: {
-        'X-Mailer': 'Gmail Web/iOS v1.0',
-        'X-Priority': '3'
-      }
+      html: cleanHtml
+      // Fake X-Mailer aur manual Message-ID custom headers hata diye gaye hain taaki Gmail naturally sign kare (SPF/DKIM/DMARC pass hoga)
     };
 
     await transporter.sendMail(mailOptions);
@@ -249,4 +238,3 @@ if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
 }
 
 export default app;
-
