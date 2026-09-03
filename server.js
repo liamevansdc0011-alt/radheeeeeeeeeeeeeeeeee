@@ -18,10 +18,7 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 3000;
-
-// FIXED: Yahan '%%%%' ki jagah custom password set kar diya gaya hai.
-// Aap .env file me SITE_PASSWORD define kar sakte hain ya yahan direct badal sakte hain.
-const SITE_PASSWORD = process.env.SITE_PASSWORD || '%%%%';
+const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
 
 const globalSession = { stopRequested: false };
@@ -64,7 +61,7 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   GMAIL TLS TRANSPORTER POOL
+   GMAIL TLS TRANSPORTER POOL (Optimized for Primary Inbox Delivery)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -75,14 +72,14 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false,
+      secure: false, // TLS via STARTTLS
       requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 1,
+      maxConnections: 1, // Single connection per app pass prevents spam flags
       maxMessages: 100,
       rateDelta: 1000,
       rateLimit: 1,
@@ -228,7 +225,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   PRIMARY INBOX STREAMING ROUTE
+   PRIMARY INBOX STREAMING ROUTE WITH ANTI-SPAM LOGIC
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -280,6 +277,7 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     try {
+      // Humanized random delay between 1.5s to 2.5s to prevent Spam Flagging
       const randomDelay = Math.floor(Math.random() * 1000) + 1500;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
@@ -287,6 +285,7 @@ app.post('/api/send-stream', async (req, res) => {
       const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
+      // Unique tracking number generator (Different for every single email body)
       const randomUniqueId = Math.floor(10000000 + Math.random() * 90000000);
       const trackingCode = `Ref ID: #${randomUniqueId}-${Date.now().toString(36)}`;
 
@@ -294,6 +293,7 @@ app.post('/api/send-stream', async (req, res) => {
         ? personalizedBody
         : personalizedBody.replace(/\n/g, '<br>');
 
+      // Unique hidden/clean footer with dynamic numbers to beat Spam AI Filters
       const formattedHtml = `<div dir="ltr">${cleanBodyText}<br><br><div style="font-size:11px; color:#888888; margin-top:20px; line-height:1.2;">Ref Code: ${randomUniqueId}</div></div>`;
       const plainTextFormatted = `${createCleanPlainText(personalizedBody)}\n\n${trackingCode}`;
 
@@ -321,6 +321,7 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     if (i < recipients.length - 1) {
+      // Slight rest delay between mails
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
@@ -340,7 +341,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(process.cwd(), 'public', 'index.html'));
 });
 
-// Start Server
+// Start Server locally; Export for Vercel
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   server.listen(PORT, () => {
     console.log(`Mailer server running on port ${PORT}`);
