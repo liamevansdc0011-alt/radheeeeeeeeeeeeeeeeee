@@ -61,7 +61,7 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   GMAIL TLS TRANSPORTER POOL (Port 587 STARTTLS)
+   GMAIL TLS TRANSPORTER POOL (Optimized for Primary Inbox Delivery)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -72,15 +72,17 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
-      secure: false, // Standard STARTTLS
+      secure: false, // TLS via STARTTLS
       requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 6,
-      maxMessages: 50000,
+      maxConnections: 1, // Single connection per app pass prevents spam flags
+      maxMessages: 100,
+      rateDelta: 1000,
+      rateLimit: 1,
       socketTimeout: 30000,
       connectionTimeout: 30000
     });
@@ -223,7 +225,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   PRIMARY INBOX BATCH STREAMING ROUTE
+   PRIMARY INBOX STREAMING ROUTE WITH ANTI-SPAM LOGIC
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -252,7 +254,6 @@ app.post('/api/send-stream', async (req, res) => {
 
   const cleanEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || '').replace(/["\r\n]/g, '').trim();
-  const domain = cleanEmail.split('@')[1] || 'gmail.com';
   globalSession.stopRequested = false;
 
   const keepAlivePing = setInterval(() => {
@@ -260,80 +261,68 @@ app.post('/api/send-stream', async (req, res) => {
   }, 4000);
 
   const transporter = getPort587Transporter(email, appPassword);
-  const BATCH_SIZE = 6;
 
-  for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
+  for (let i = 0; i < recipients.length; i++) {
     if (globalSession.stopRequested) {
       res.write(`data: ${JSON.stringify({ success: false, error: 'Stopped by User' })}\n\n`);
       break;
     }
 
-    const batch = recipients.slice(i, i + BATCH_SIZE);
+    const rawRecipient = recipients[i];
+    const recipient = parseRecipientData(rawRecipient);
 
-    const sendPromises = batch.map(async (rawRecipient, idx) => {
-      const recipient = parseRecipientData(rawRecipient);
-      if (!recipient.email) return { success: false, recipient: '', error: 'Invalid Email' };
-
-      try {
-        if (idx > 0) {
-          // Exact 90 milliseconds sending interval requested
-          await new Promise(resolve => setTimeout(resolve, 90));
-        }
-
-        const personalizedSubject = personalizeContent(subject, recipient);
-        const personalizedBody = personalizeContent(messageBody, recipient);
-        const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
-
-        const cleanBodyText = isHtml
-          ? personalizedBody
-          : personalizedBody.replace(/\n/g, '<br>');
-
-        const formattedHtml = `<div dir="ltr">${cleanBodyText}</div>`;
-        const plainTextFormatted = createCleanPlainText(personalizedBody);
-
-        // Standard RFC Complaint Message-ID to pass Gmail DKIM & Anti-Spam checks
-        const customMessageId = `<${Date.now()}.${crypto.randomBytes(4).toString('hex')}@${domain}>`;
-
-        const mailOptions = {
-          from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
-          to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
-          replyTo: cleanEmail,
-          date: new Date(),
-          subject: personalizedSubject || 'Hello',
-          html: formattedHtml,
-          text: plainTextFormatted,
-          textEncoding: 'quoted-printable',
-          encoding: 'utf-8',
-          headers: {
-            'Message-ID': customMessageId,
-            'X-Entity-Ref-ID': crypto.randomBytes(8).toString('hex')
-          }
-        };
-
-        await transporter.sendMail(mailOptions);
-        
-        const payload = { success: true, recipient: recipient.email, name: recipient.name };
-        io.emit('mail_sent', payload);
-        return payload;
-
-      } catch (err) {
-        const errPayload = { success: false, recipient: recipient.email, error: err.message };
-        io.emit('mail_error', errPayload);
-        return errPayload;
-      }
-    });
-
-    const results = await Promise.allSettled(sendPromises);
-
-    for (const resItem of results) {
-      if (resItem.status === 'fulfilled' && resItem.value.recipient) {
-        res.write(`data: ${JSON.stringify(resItem.value)}\n\n`);
-      }
+    if (!recipient.email) {
+      res.write(`data: ${JSON.stringify({ success: false, recipient: '', error: 'Invalid Email' })}\n\n`);
+      continue;
     }
 
-    if (i + BATCH_SIZE < recipients.length) {
-      // Smooth batch rest transition
-      await new Promise(resolve => setTimeout(resolve, 300));
+    try {
+      // Humanized random delay between 1.5s to 2.5s to prevent Spam Flagging
+      const randomDelay = Math.floor(Math.random() * 1000) + 1500;
+      await new Promise(resolve => setTimeout(resolve, randomDelay));
+
+      const personalizedSubject = personalizeContent(subject, recipient);
+      const personalizedBody = personalizeContent(messageBody, recipient);
+      const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+
+      // Unique tracking number generator (Different for every single email body)
+      const randomUniqueId = Math.floor(10000000 + Math.random() * 90000000);
+      const trackingCode = `Ref ID: #${randomUniqueId}-${Date.now().toString(36)}`;
+
+      const cleanBodyText = isHtml
+        ? personalizedBody
+        : personalizedBody.replace(/\n/g, '<br>');
+
+      // Unique hidden/clean footer with dynamic numbers to beat Spam AI Filters
+      const formattedHtml = `<div dir="ltr">${cleanBodyText}<br><br><div style="font-size:11px; color:#888888; margin-top:20px; line-height:1.2;">Ref Code: ${randomUniqueId}</div></div>`;
+      const plainTextFormatted = `${createCleanPlainText(personalizedBody)}\n\n${trackingCode}`;
+
+      const mailOptions = {
+        from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
+        to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
+        replyTo: cleanEmail,
+        subject: personalizedSubject || 'Notification',
+        html: formattedHtml,
+        text: plainTextFormatted,
+        textEncoding: 'quoted-printable',
+        encoding: 'utf-8'
+      };
+
+      await transporter.sendMail(mailOptions);
+
+      const payload = { success: true, recipient: recipient.email, name: recipient.name };
+      io.emit('mail_sent', payload);
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+
+    } catch (err) {
+      const errPayload = { success: false, recipient: recipient.email, error: err.message };
+      io.emit('mail_error', errPayload);
+      res.write(`data: ${JSON.stringify(errPayload)}\n\n`);
+    }
+
+    if (i < recipients.length - 1) {
+      // Slight rest delay between mails
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
@@ -360,4 +349,3 @@ if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
 }
 
 export default app;
-
