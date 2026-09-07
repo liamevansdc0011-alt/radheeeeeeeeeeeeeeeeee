@@ -243,7 +243,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function resetSendUI() {
         isSending = false;
         sendBtn.disabled = false;
-        sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send All';
+        sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send All'; 
         stopBtn.style.display = 'none';
         stopBtn.disabled = false;
 
