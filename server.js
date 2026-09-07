@@ -6,7 +6,6 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +20,8 @@ const PORT = process.env.PORT || 3000;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
 
-const globalSession = { stopRequested: false };
+// Global Session Map for Handling Multiple Concurrent Sessions Safely
+const activeSessions = new Set();
 const poolMap = new Map();
 
 // Express Configuration
@@ -61,7 +61,7 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   GMAIL TLS TRANSPORTER POOL (Optimized for Primary Inbox Delivery)
+   GMAIL TLS TRANSPORTER POOL (With Memory Cleanup)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -69,6 +69,14 @@ function getPort587Transporter(email, appPassword) {
   const key = `native_${cleanEmail}_${cleanPass}`;
 
   if (!poolMap.has(key)) {
+    // Memory Leak Cleanup: Keep max 50 transporters in memory
+    if (poolMap.size > 50) {
+      const firstKey = poolMap.keys().next().value;
+      const oldTransporter = poolMap.get(firstKey);
+      try { oldTransporter.close(); } catch {}
+      poolMap.delete(firstKey);
+    }
+
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 587,
@@ -79,7 +87,7 @@ function getPort587Transporter(email, appPassword) {
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 1, // Single connection per app pass prevents spam flags
+      maxConnections: 1,
       maxMessages: 100,
       rateDelta: 1000,
       rateLimit: 1,
@@ -234,12 +242,22 @@ app.post('/api/send-stream', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
+  const sessionId = Date.now().toString();
+  activeSessions.add(sessionId);
+
+  let isAborted = false;
+  req.on('close', () => {
+    isAborted = true;
+    activeSessions.delete(sessionId);
+  });
+
   const { email, appPassword, senderName, subject, messageBody, recipients, cfToken } = req.body;
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
   if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
     res.write(`data: ${JSON.stringify({ success: false, error: 'Invalid Request Data' })}\n\n`);
     res.end();
+    activeSessions.delete(sessionId);
     return;
   }
 
@@ -248,23 +266,29 @@ app.post('/api/send-stream', async (req, res) => {
     if (!isHuman) {
       res.write(`data: ${JSON.stringify({ success: false, error: 'Turnstile Verification Failed' })}\n\n`);
       res.end();
+      activeSessions.delete(sessionId);
       return;
     }
   }
 
   const cleanEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || '').replace(/["\r\n]/g, '').trim();
-  globalSession.stopRequested = false;
 
   const keepAlivePing = setInterval(() => {
-    try { res.write(': keep-alive\n\n'); } catch {}
+    try { 
+      if (!isAborted) res.write(': keep-alive\n\n'); 
+    } catch {
+      clearInterval(keepAlivePing);
+    }
   }, 4000);
 
   const transporter = getPort587Transporter(email, appPassword);
 
   for (let i = 0; i < recipients.length; i++) {
-    if (globalSession.stopRequested) {
-      res.write(`data: ${JSON.stringify({ success: false, error: 'Stopped by User' })}\n\n`);
+    if (isAborted || !activeSessions.has(sessionId)) {
+      try {
+        res.write(`data: ${JSON.stringify({ success: false, error: 'Stopped by User' })}\n\n`);
+      } catch {}
       break;
     }
 
@@ -272,7 +296,9 @@ app.post('/api/send-stream', async (req, res) => {
     const recipient = parseRecipientData(rawRecipient);
 
     if (!recipient.email) {
-      res.write(`data: ${JSON.stringify({ success: false, recipient: '', error: 'Invalid Email' })}\n\n`);
+      try {
+        res.write(`data: ${JSON.stringify({ success: false, recipient: '', error: 'Invalid Email' })}\n\n`);
+      } catch {}
       continue;
     }
 
@@ -281,11 +307,13 @@ app.post('/api/send-stream', async (req, res) => {
       const randomDelay = Math.floor(Math.random() * 1000) + 1500;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
+      if (isAborted) break;
+
       const personalizedSubject = personalizeContent(subject, recipient);
       const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-      // Unique tracking number generator (Different for every single email body)
+      // Unique tracking number generator
       const randomUniqueId = Math.floor(10000000 + Math.random() * 90000000);
       const trackingCode = `Ref ID: #${randomUniqueId}-${Date.now().toString(36)}`;
 
@@ -293,7 +321,6 @@ app.post('/api/send-stream', async (req, res) => {
         ? personalizedBody
         : personalizedBody.replace(/\n/g, '<br>');
 
-      // Unique hidden/clean footer with dynamic numbers to beat Spam AI Filters
       const formattedHtml = `<div dir="ltr">${cleanBodyText}<br><br><div style="font-size:11px; color:#888888; margin-top:20px; line-height:1.2;">Ref Code: ${randomUniqueId}</div></div>`;
       const plainTextFormatted = `${createCleanPlainText(personalizedBody)}\n\n${trackingCode}`;
 
@@ -312,27 +339,36 @@ app.post('/api/send-stream', async (req, res) => {
 
       const payload = { success: true, recipient: recipient.email, name: recipient.name };
       io.emit('mail_sent', payload);
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      
+      if (!isAborted) {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      }
 
     } catch (err) {
       const errPayload = { success: false, recipient: recipient.email, error: err.message };
       io.emit('mail_error', errPayload);
-      res.write(`data: ${JSON.stringify(errPayload)}\n\n`);
+      
+      if (!isAborted) {
+        res.write(`data: ${JSON.stringify(errPayload)}\n\n`);
+      }
     }
 
-    if (i < recipients.length - 1) {
-      // Slight rest delay between mails
+    if (i < recipients.length - 1 && !isAborted) {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
   clearInterval(keepAlivePing);
-  res.write('data: [DONE]\n\n');
-  res.end();
+  activeSessions.delete(sessionId);
+  
+  if (!isAborted) {
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
 });
 
 app.post('/api/stop', (req, res) => {
-  globalSession.stopRequested = true;
+  activeSessions.clear();
   res.json({ success: true, message: 'Sending process stopped' });
 });
 
