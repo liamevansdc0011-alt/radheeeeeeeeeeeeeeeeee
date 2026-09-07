@@ -25,8 +25,8 @@ const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '';
 const poolMap = new Map();
 
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(express.static(path.join(process.cwd(), 'public')));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -55,7 +55,7 @@ async function verifyTurnstile(token, ip) {
 }
 
 /* ==========================================================================
-   HIGH-DELIVERABILITY GMAIL TRANSPORTER POOL
+   GMAIL TRANSPORTER POOL WITH SECURE CONFIGURATION
    ========================================================================== */
 function getSecureTransporter(user, pass) {
   const cleanEmail = user.toLowerCase().trim();
@@ -79,14 +79,9 @@ function getSecureTransporter(user, pass) {
       },
       pool: true,
       maxConnections: 1,
-      maxMessages: 50,
-      rateDelta: 3000,
-      rateLimit: 1,
-      socketTimeout: 45000,
-      connectionTimeout: 45000,
-      tls: {
-        rejectUnauthorized: false
-      }
+      maxMessages: 100,
+      socketTimeout: 30000,
+      connectionTimeout: 30000
     });
     poolMap.set(key, transporter);
   }
@@ -94,14 +89,14 @@ function getSecureTransporter(user, pass) {
 }
 
 /* ==========================================================================
-   ADVANCED SPINTAX & INBOX UTILITIES
+   HELPER UTILITIES
    ========================================================================== */
 function processSpintax(text) {
   if (!text) return '';
   let result = String(text);
   const regex = /\{([^{}]+)\}/s;
   let count = 0;
-  while (regex.test(result) && count < 40) {
+  while (regex.test(result) && count < 20) {
     result = result.replace(regex, (_, choices) => {
       const arr = choices.split('|');
       return arr[Math.floor(Math.random() * arr.length)].trim();
@@ -155,15 +150,6 @@ function createCleanPlainText(htmlOrText) {
     .trim();
 }
 
-function generateAntiSpamFingerprint() {
-  const chars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
-  let fingerprint = '';
-  for (let i = 0; i < 8; i++) {
-    fingerprint += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return fingerprint;
-}
-
 /* ==========================================================================
    ROUTES
    ========================================================================== */
@@ -191,7 +177,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   PRIMARY INBOX SINGLE EMAIL DISPATCHER
+   SINGLE EMAIL DISPATCHER
    ========================================================================== */
 app.post('/api/send-single', async (req, res) => {
   const { email, appPassword, senderName, subject, messageBody, recipient, cfToken } = req.body;
@@ -214,13 +200,8 @@ app.post('/api/send-single', async (req, res) => {
   const cleanSenderName = (senderName || '').replace(/["\r\n]/g, '').trim();
 
   try {
-    // 1. Human-like Adaptive Speed Delay (2.5s - 4.5s)
-    const naturalHumanDelay = Math.floor(Math.random() * 2000) + 2500;
-    await new Promise(resolve => setTimeout(resolve, naturalHumanDelay));
-
     const transporter = getSecureTransporter(email, appPassword);
 
-    // 2. Personalization & Spintax Parsing
     const customSubject = processSpintax(subject)
       .replace(/{Name}/gi, rec.name)
       .replace(/{FirstName}/gi, rec.name.split(' ')[0])
@@ -236,20 +217,11 @@ app.post('/api/send-single', async (req, res) => {
     const isHtml = /<[a-z][\s\S]*>/i.test(customBody);
     const plainText = createCleanPlainText(customBody);
 
-    // 3. Unique Invisible Fingerprint Generation
-    const uniqueRefNum = Math.floor(100000 + Math.random() * 900000);
-    const timeHash = Date.now().toString(36);
-    const antiSpamMarker = generateAntiSpamFingerprint();
-
-    const cleanFooter = `<br><br><div style="font-size:11px; color:#888888; margin-top:20px; line-height:1.2;">Ref ID: #${uniqueRefNum}-${timeHash}${antiSpamMarker}</div>`;
-    
     const cleanHtml = isHtml 
-      ? `<div dir="ltr">${customBody}${cleanFooter}</div>` 
-      : `<div dir="ltr">${plainText.replace(/\n/g, '<br>')}${cleanFooter}</div>`;
+      ? `<div dir="ltr">${customBody}</div>` 
+      : `<div dir="ltr">${plainText.replace(/\n/g, '<br>')}</div>`;
 
-    const plainTextFormatted = `${plainText}\n\nRef ID: #${uniqueRefNum}-${timeHash}`;
-
-    // 4. Message-ID & RFC Standard Enveloping
+    // Standard Message-ID generation matching sending domain
     const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
     const messageId = `<${crypto.randomBytes(16).toString('hex')}@${domainPart}>`;
 
@@ -260,16 +232,8 @@ app.post('/api/send-single', async (req, res) => {
       messageId: messageId,
       date: new Date(),
       subject: customSubject || 'Notification',
-      text: plainTextFormatted,
-      html: cleanHtml,
-      textEncoding: 'quoted-printable',
-      encoding: 'utf-8',
-      headers: {
-        'X-Mailer': 'Gmail Webmail Engine/v3.1',
-        'X-Priority': '3',
-        'X-MSMail-Priority': 'Normal',
-        'Importance': 'Normal'
-      }
+      text: plainText,
+      html: cleanHtml
     };
 
     await transporter.sendMail(mailOptions);
@@ -291,12 +255,12 @@ app.get('*', (req, res) => {
   const filePath2 = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(filePath1)) return res.sendFile(filePath1);
   if (fs.existsSync(filePath2)) return res.sendFile(filePath2);
-  return res.status(200).send('<h1>Mailer Backend Server Running Safely</h1>');
+  return res.status(200).send('<h1>Server Running</h1>');
 });
 
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) { 
   server.listen(PORT, () => {
-    console.log(`Mailer backend running safely on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
