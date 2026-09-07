@@ -1,7 +1,7 @@
 {
-  "name": "gmail-bulk-mailer",
+  "name": "email-service",
   "version": "1.0.0",
-  "description": "Streaming Email Sender with Anti-Spam protection",
+  "description": "Node.js transactional email delivery service",
   "main": "server.js",
   "type": "module",
   "scripts": {
