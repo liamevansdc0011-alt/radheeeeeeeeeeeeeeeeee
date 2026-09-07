@@ -242,7 +242,7 @@ app.get('*', (req, res) => {
   return res.status(200).send('<h1>Server Running</h1>');
 });
 
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) { 
   server.listen(PORT, () => {
     console.log(`Server running safely on port ${PORT}`);
   });
