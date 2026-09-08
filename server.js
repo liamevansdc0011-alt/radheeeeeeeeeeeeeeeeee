@@ -18,7 +18,7 @@ const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x000000000000
 const globalSession = { stopRequested: false };
 const poolMap = new Map();
 
-// Dynamic Helper Delays
+// Helper Delay
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Express Setup
@@ -54,36 +54,31 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   GMAIL TLS TRANSPORTER POOL (Optimized TLS & Connections)
+   OPTIMIZED GMAIL SSL TRANSPORTER POOL (Port 465 is more stable for Gmail)
    ========================================================================== */
-function getPort587Transporter(email, appPassword) {
+function getPort465Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
   const cleanPass = appPassword.replace(/\s+/g, '').trim();
-  const key = `port587_${cleanEmail}_${cleanPass}`;
+  const key = `port465_${cleanEmail}_${cleanPass}`;
 
-  if (poolMap.size > 100) {
+  if (poolMap.size > 50) {
     poolMap.clear();
   }
 
   if (!poolMap.has(key)) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
-      port: 587,
-      secure: false, // STARTTLS
-      requireTLS: true,
+      port: 465,
+      secure: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 6,
+      maxConnections: 2, // Low connections prevent Gmail flagging
       maxMessages: 100,
       socketTimeout: 30000,
-      connectionTimeout: 30000,
-      tls: {
-        rejectUnauthorized: true,
-        minVersion: 'TLSv1.2'
-      }
+      connectionTimeout: 30000
     });
     poolMap.set(key, transporter);
   }
@@ -91,7 +86,7 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   RECIPIENT & SPINTAX HELPERS WITH INVISIBLE SPAM-BYPASS HASH
+   RECIPIENT & SPINTAX HELPERS
    ========================================================================== */
 function parseRecipientData(input) {
   let email = '';
@@ -158,26 +153,23 @@ function parseSpintax(text) {
   return spun.replace(/[\{\}]/g, '').trim();
 }
 
-// Zero-width space generator: Unseen by users, but changes body cryptographic fingerprint for Spam Bypassing
-function getInvisibleHash() {
-  const zeroWidthChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
-  let hash = '';
-  for (let i = 0; i < 6; i++) {
-    hash += zeroWidthChars[Math.floor(Math.random() * zeroWidthChars.length)];
-  }
-  return hash;
+// Generate visible, clean, natural reference numbers for body customization
+function generateNaturalRefCode() {
+  const hexPart = crypto.randomBytes(3).toString('hex').toUpperCase();
+  const numPart = Math.floor(1000 + Math.random() * 9000);
+  return `${hexPart}-${numPart}`;
 }
 
 function personalizeContent(template, recipient) {
   if (!template) return '';
   let content = parseSpintax(template);
 
-  const displayName = recipient.name || recipient.firstName || '';
-  const displayFirstName = recipient.firstName || displayName || '';
+  const displayName = recipient.name || recipient.firstName || 'Customer';
+  const displayFirstName = recipient.firstName || displayName;
 
-  content = content.replace(/{Name}/gi, displayName ? displayName : 'there');
-  content = content.replace(/{FirstName}/gi, displayFirstName ? displayFirstName : 'there');
-  content = content.replace(/{First_Name}/gi, displayFirstName ? displayFirstName : 'there');
+  content = content.replace(/{Name}/gi, displayName);
+  content = content.replace(/{FirstName}/gi, displayFirstName);
+  content = content.replace(/{First_Name}/gi, displayFirstName);
   content = content.replace(/{Email}/gi, recipient.email);
   content = content.replace(/{Domain}/gi, recipient.domain);
 
@@ -234,7 +226,7 @@ app.post('/api/verify', async (req, res) => {
   }
 
   try {
-    const transporter = getPort587Transporter(email, appPassword);
+    const transporter = getPort465Transporter(email, appPassword);
     await transporter.verify();
     return res.json({ success: true, message: 'SMTP verified successfully' });
   } catch (error) {
@@ -246,7 +238,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   INBOX-OPTIMIZED DISPATCH ROUTE (Batch 6 + Micro-Staggering)
+   INBOX-OPTIMIZED SSE DISPATCH ROUTE (Batch 2 + Safe Natural Delay)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -280,8 +272,10 @@ app.post('/api/send-stream', async (req, res) => {
     res.write(': keep-alive\n\n');
   }, 4000);
 
-  const transporter = getPort587Transporter(email, appPassword);
-  const BATCH_SIZE = 6;
+  const transporter = getPort465Transporter(email, appPassword);
+  
+  // High Inbox Batching Config: BATCH_SIZE 2 allows natural human-like delivery
+  const BATCH_SIZE = 2;
 
   for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
     if (globalSession.stopRequested) {
@@ -291,14 +285,14 @@ app.post('/api/send-stream', async (req, res) => {
 
     const currentBatch = recipients.slice(i, i + BATCH_SIZE);
 
-    // Micro-staggering inside the batch to avoid simultaneous TLS handshake flags
     const sendPromises = currentBatch.map(async (rawRecipient, index) => {
-      await delay(index * 150); // 150ms delay per thread in batch
-      
+      // 500ms delay per thread in batch to avoid concurrent connection locks
+      await delay(index * 500);
+
       const recipient = parseRecipientData(rawRecipient);
 
-      if (!recipient.email) {
-        return { success: false, recipient: '', error: 'Invalid Email' };
+      if (!recipient.email || !recipient.email.includes('@')) {
+        return { success: false, recipient: recipient.email || '', error: 'Invalid Email' };
       }
 
       try {
@@ -306,31 +300,39 @@ app.post('/api/send-stream', async (req, res) => {
         const personalizedBody = personalizeContent(messageBody, recipient);
         const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-        const invisibleSalt = getInvisibleHash();
-        const innerContent = isHtml 
-          ? personalizedBody 
+        // Natural, unique reference code appended at the bottom of the body
+        const refCode = generateNaturalRefCode();
+        const refFooterHtml = `<br><br><p style="color:#777;font-size:11px;margin-top:20px;">Ref-ID: #${refCode}</p>`;
+        const refFooterText = `\n\nRef-ID: #${refCode}`;
+
+        const innerContent = isHtml
+          ? personalizedBody
           : personalizedBody.replace(/\n/g, '<br>');
 
-        // Natural HTML block without marketing wrapper signatures
-        const formattedHtml = `${innerContent}${invisibleSalt}`;
-        const plainTextFormatted = createPlainTextFromHtml(personalizedBody) + invisibleSalt;
+        const formattedHtml = `<div dir="ltr">${innerContent}${refFooterHtml}</div>`;
+        const plainTextFormatted = createPlainTextFromHtml(personalizedBody) + refFooterText;
 
-        // Clean natural email payload
+        // Custom RFC-compliant Message-ID matching sender domain
+        const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
+        const messageId = `<${crypto.randomBytes(16).toString('hex')}@${domainPart}>`;
+
         const mailOptions = {
           from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
           to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
           replyTo: cleanEmail,
-          subject: (personalizedSubject || 'Update') + invisibleSalt,
+          messageId: messageId,
+          date: new Date(),
+          subject: personalizedSubject || 'Update',
           html: formattedHtml,
           text: plainTextFormatted
         };
 
         const info = await transporter.sendMail(mailOptions);
-        return { 
-          success: true, 
-          recipient: recipient.email, 
-          name: recipient.name, 
-          ref: info.messageId || 'SENT' 
+        return {
+          success: true,
+          recipient: recipient.email,
+          name: recipient.name,
+          ref: info.messageId || 'SENT'
         };
 
       } catch (err) {
@@ -346,9 +348,9 @@ app.post('/api/send-stream', async (req, res) => {
       }
     }
 
-    // 1 to 2 seconds randomized delay between 6-mail batches
+    // Natural randomized delay of 2.5s to 4.5s between batches for Maximum Deliverability
     if (i + BATCH_SIZE < recipients.length) {
-      const batchDelay = Math.floor(Math.random() * 1000) + 1000;
+      const batchDelay = 2500 + Math.floor(Math.random() * 2000);
       await delay(batchDelay);
     }
   }
