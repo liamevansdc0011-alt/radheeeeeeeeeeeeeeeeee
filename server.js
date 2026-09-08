@@ -4,6 +4,7 @@ import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -51,7 +52,7 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   OFFICIAL GMAIL TRANSPORTER (Optimized for Vercel Serverless)
+   GMAIL TRANSPORTER (Direct Inboxing Optimized)
    ========================================================================== */
 function getGmailTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -64,16 +65,16 @@ function getGmailTransporter(email, appPassword) {
 
   if (!poolMap.has(key)) {
     const transporter = nodemailer.createTransport({
-      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
-      pool: true,
-      maxConnections: 1,
-      maxMessages: 100,
-      socketTimeout: 15000,
-      connectionTimeout: 15000
+      pool: false, // Connection pooling disabled for Vercel serverless stability
+      socketTimeout: 20000,
+      connectionTimeout: 20000
     });
     poolMap.set(key, transporter);
   }
@@ -81,7 +82,7 @@ function getGmailTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   RECIPIENT & SPINTAX HELPERS
+   HELPERS & SPINTAX
    ========================================================================== */
 function parseRecipientData(input) {
   let email = '';
@@ -182,7 +183,7 @@ function createPlainTextFromHtml(html) {
 }
 
 /* ==========================================================================
-   API ROUTES
+   ROUTES
    ========================================================================== */
 app.get('/', (req, res) => {
   const filePath1 = path.join(process.cwd(), 'public', 'index.html');
@@ -226,7 +227,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   FALLBACK SSE STREAM (Fixed Vercel Compatibility)
+   STREAM SENDING ROUTE (Inboxing Optimized)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -256,7 +257,14 @@ app.post('/api/send-stream', async (req, res) => {
   const cleanSenderName = (senderName || '').replace(/["\r\n]/g, '').trim();
   const transporter = getGmailTransporter(email, appPassword);
 
+  globalSession.stopRequested = false;
+
   for (let i = 0; i < recipients.length; i++) {
+    if (globalSession.stopRequested) {
+      res.write(`data: ${JSON.stringify({ success: false, error: 'Stopped by User' })}\n\n`);
+      break;
+    }
+
     const rawRecipient = recipients[i];
     const recipient = parseRecipientData(rawRecipient);
 
@@ -267,12 +275,17 @@ app.post('/api/send-stream', async (req, res) => {
 
     try {
       const personalizedSubject = personalizeContent(subject, recipient);
-      const personalizedBody = personalizeContent(messageBody, recipient);
-      const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+      let personalizedBody = personalizeContent(messageBody, recipient);
+      
+      // Unique Tag Addition (Prevents Gmail Bulk Detection)
+      const uniqueTag = crypto.randomBytes(3).toString('hex').toUpperCase();
+      const footerTagHtml = `<br><br><span style="color:#888;font-size:10px;">Ref: #${uniqueTag}</span>`;
+      const footerTagText = `\n\nRef: #${uniqueTag}`;
 
+      const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
       const innerContent = isHtml ? personalizedBody : personalizedBody.replace(/\n/g, '<br>');
-      const formattedHtml = `<div dir="ltr">${innerContent}</div>`;
-      const plainTextFormatted = createPlainTextFromHtml(personalizedBody);
+      const formattedHtml = `<div dir="ltr">${innerContent}${footerTagHtml}</div>`;
+      const plainTextFormatted = createPlainTextFromHtml(personalizedBody) + footerTagText;
 
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
@@ -290,8 +303,9 @@ app.post('/api/send-stream', async (req, res) => {
       res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
+    // Delay between mails (1 second delay for optimal sending balance)
     if (i < recipients.length - 1) {
-      await delay(800);
+      await delay(1000);
     }
   }
 
