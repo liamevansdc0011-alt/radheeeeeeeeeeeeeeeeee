@@ -3,7 +3,6 @@ import express from 'express';
 import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
-import crypto from 'crypto';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 
@@ -18,10 +17,8 @@ const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x000000000000
 const globalSession = { stopRequested: false };
 const poolMap = new Map();
 
-// Helper Delay
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Express Setup
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -54,7 +51,7 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   STANDARD GMAIL TRANSPORTER (Clean Official Connection)
+   OFFICIAL GMAIL TRANSPORTER (Optimized for Vercel Serverless)
    ========================================================================== */
 function getGmailTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -67,16 +64,16 @@ function getGmailTransporter(email, appPassword) {
 
   if (!poolMap.has(key)) {
     const transporter = nodemailer.createTransport({
-      service: 'gmail', // Official Gmail service mapping for maximum compatibility
+      service: 'gmail',
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 1, // Single connection per app password avoids rate-limit drops
+      maxConnections: 1,
       maxMessages: 100,
-      socketTimeout: 30000,
-      connectionTimeout: 30000
+      socketTimeout: 15000,
+      connectionTimeout: 15000
     });
     poolMap.set(key, transporter);
   }
@@ -229,41 +226,42 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   CLEAN & HIGH-INBOXING SEND ROUTE
+   FALLBACK SSE STREAM (Fixed Vercel Compatibility)
    ========================================================================== */
-app.post('/api/send-batch', async (req, res) => {
+app.post('/api/send-stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+
   const { email, appPassword, senderName, subject, messageBody, recipients, cfToken } = req.body;
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
   if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
-    return res.status(400).json({ success: false, error: 'Invalid Request Data' });
+    res.write(`data: ${JSON.stringify({ success: false, error: 'Invalid Request Data' })}\n\n`);
+    res.end();
+    return;
   }
 
   if (cfToken) {
     const isHuman = await verifyTurnstileToken(cfToken, clientIp);
     if (!isHuman) {
-      return res.status(403).json({ success: false, error: 'Turnstile Verification Failed' });
+      res.write(`data: ${JSON.stringify({ success: false, error: 'Turnstile Verification Failed' })}\n\n`);
+      res.end();
+      return;
     }
   }
 
   const cleanEmail = email.toLowerCase().trim();
   const cleanSenderName = (senderName || '').replace(/["\r\n]/g, '').trim();
-  globalSession.stopRequested = false;
-
   const transporter = getGmailTransporter(email, appPassword);
-  const results = [];
 
-  // Sequential delivery ensures 100% delivery without triggering Gmail spam blocks
   for (let i = 0; i < recipients.length; i++) {
-    if (globalSession.stopRequested) {
-      break;
-    }
-
     const rawRecipient = recipients[i];
     const recipient = parseRecipientData(rawRecipient);
 
     if (!recipient.email || !recipient.email.includes('@')) {
-      results.push({ success: false, recipient: recipient.email || '', error: 'Invalid Email' });
+      res.write(`data: ${JSON.stringify({ success: false, recipient: '', error: 'Invalid Email' })}\n\n`);
       continue;
     }
 
@@ -272,12 +270,10 @@ app.post('/api/send-batch', async (req, res) => {
       const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-      // Clean HTML wrapper
       const innerContent = isHtml ? personalizedBody : personalizedBody.replace(/\n/g, '<br>');
       const formattedHtml = `<div dir="ltr">${innerContent}</div>`;
       const plainTextFormatted = createPlainTextFromHtml(personalizedBody);
 
-      // Pure Native Gmail Envelope Options (NO fake Message-ID / NO zero-width space)
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
@@ -288,26 +284,19 @@ app.post('/api/send-batch', async (req, res) => {
       };
 
       const info = await transporter.sendMail(mailOptions);
-
-      results.push({
-        success: true,
-        recipient: recipient.email,
-        name: recipient.name,
-        ref: info.messageId || 'SENT'
-      });
+      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name, ref: info.messageId || 'SENT' })}\n\n`);
 
     } catch (err) {
-      results.push({ success: false, recipient: recipient.email, error: err.message });
+      res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
     }
 
-    // 1.5 - 2.5 seconds delay between mails to maintain high sender domain reputation
     if (i < recipients.length - 1) {
-      const naturalDelay = 1500 + Math.floor(Math.random() * 1000);
-      await delay(naturalDelay);
+      await delay(800);
     }
   }
 
-  return res.json({ success: true, results });
+  res.write('data: [DONE]\n\n');
+  res.end();
 });
 
 app.post('/api/stop', (req, res) => {
@@ -315,18 +304,11 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, message: 'Sending process stopped' });
 });
 
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled Rejection:', reason);
-});
-
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
+process.on('unhandledRejection', (reason) => console.error('Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => console.error('Uncaught Exception:', err));
 
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`🚀 Mailer server running safely on port ${PORT}`);
-  });
+  app.listen(PORT, () => console.log(`🚀 Mailer server running on port ${PORT}`));
 }
 
 export default app;
