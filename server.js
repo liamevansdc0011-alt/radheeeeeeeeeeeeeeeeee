@@ -16,6 +16,8 @@ const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const globalState = { isTerminated: false };
 const activeTransporters = new Map();
 
+// Dynamic Human Delay Generator (Prevents Bot Threshold Flagging)
+const getHumanDelay = () => Math.floor(Math.random() * (2800 - 1200 + 1)) + 1200;
 const waitFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 app.use(cors());
@@ -23,7 +25,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. SAFE GMAIL SSL TRANSPORTER
+   1. INBOX-OPTIMIZED GMAIL SSL TRANSPORTER
    ========================================================================== */
 function acquireSmtpClient(userEmail, appPassword) {
   const accountKey = `${userEmail.toLowerCase().trim()}_${appPassword.trim()}`;
@@ -38,8 +40,8 @@ function acquireSmtpClient(userEmail, appPassword) {
         pass: appPassword.replace(/\s+/g, '').trim()
       },
       pool: true,
-      maxConnections: 3, // Reduced connection limit to prevent Google Ban
-      maxMessages: 200,
+      maxConnections: 2, // Kept low to bypass Gmail automated burst filter
+      maxMessages: 100,
       socketTimeout: 30000,
       connectionTimeout: 30000
     });
@@ -51,7 +53,7 @@ function acquireSmtpClient(userEmail, appPassword) {
 }
 
 /* ==========================================================================
-   2. RECIPIENT & CONTENT PARSER
+   2. RECIPIENT & SPINTAX PARSER ENGINE
    ========================================================================== */
 function parseRecipientInfo(rawInput) {
   let targetEmail = "";
@@ -181,7 +183,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. INBOX-OPTIMIZED STREAMING ENGINE
+   4. STREAMING ENGINE (Strict Human Behavior Engine)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -207,8 +209,8 @@ app.post('/api/send-stream', async (req, res) => {
 
   const smtpClient = acquireSmtpClient(email, appPassword);
 
-  const CONCURRENCY_LIMIT = 3; // Max 3 concurrent sends to avoid Google AI flagging
-  const BATCH_INTERVAL_MS = 1500;
+  // Send 2 at a time to keep connection natural
+  const CONCURRENCY_LIMIT = 2; 
 
   for (let index = 0; index < recipients.length; index += CONCURRENCY_LIMIT) {
     if (globalState.isTerminated) {
@@ -231,13 +233,13 @@ app.post('/api/send-stream', async (req, res) => {
         const containsHtml = /<[a-z][\s\S]*>/i.test(finalBody);
 
         const senderDomain = senderEmail.split('@')[1] || 'gmail.com';
-        const uniqueMsgId = `<${crypto.randomBytes(8).toString('hex')}.${Date.now()}@${senderDomain}>`;
+        const uniqueMsgId = `<${crypto.randomBytes(12).toString('hex')}@${senderDomain}>`;
 
         const mailPayload = {
           from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
           to: contact.name !== "Valued Partner" ? `"${contact.name}" <${contact.email}>` : contact.email,
           replyTo: senderEmail,
-          subject: finalSubject || 'Important Update',
+          subject: finalSubject || 'Hello',
           messageId: uniqueMsgId,
           date: new Date()
         };
@@ -270,7 +272,8 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     if (index + CONCURRENCY_LIMIT < recipients.length) {
-      await waitFor(BATCH_INTERVAL_MS);
+      const delayMs = getHumanDelay();
+      await waitFor(delayMs);
     }
   }
 
@@ -285,7 +288,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-  app.listen(PORT, () => console.log(`🚀 Server running on Port ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 Primary Inbox Server Running on Port ${PORT}`));
 }
 
 export default app;
