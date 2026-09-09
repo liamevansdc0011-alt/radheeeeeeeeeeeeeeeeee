@@ -23,7 +23,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. HIGH-PERFORMANCE DIRECT SSL TRANSPORTER ENGINE
+   1. SAFE GMAIL SSL TRANSPORTER
    ========================================================================== */
 function acquireSmtpClient(userEmail, appPassword) {
   const accountKey = `${userEmail.toLowerCase().trim()}_${appPassword.trim()}`;
@@ -32,16 +32,16 @@ function acquireSmtpClient(userEmail, appPassword) {
     const client = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 465,
-      secure: true, // Native SSL Connection (Anti-Spam Optimized)
+      secure: true,
       auth: {
         user: userEmail.toLowerCase().trim(),
         pass: appPassword.replace(/\s+/g, '').trim()
       },
       pool: true,
-      maxConnections: 7, // Parallel Streams for Batch Sending
-      maxMessages: 1000,
-      socketTimeout: 20000,
-      connectionTimeout: 20000
+      maxConnections: 3, // Reduced connection limit to prevent Google Ban
+      maxMessages: 200,
+      socketTimeout: 30000,
+      connectionTimeout: 30000
     });
 
     activeTransporters.set(accountKey, client);
@@ -51,7 +51,7 @@ function acquireSmtpClient(userEmail, appPassword) {
 }
 
 /* ==========================================================================
-   2. RECIPIENT & CONTENT NORMALIZER
+   2. RECIPIENT & CONTENT PARSER
    ========================================================================== */
 function parseRecipientInfo(rawInput) {
   let targetEmail = "";
@@ -151,7 +151,7 @@ function convertHtmlToPlain(htmlContent) {
 }
 
 /* ==========================================================================
-   3. ROUTE ENDPOINTS
+   3. ROUTES
    ========================================================================== */
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -181,7 +181,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (7 Parallel Threads x 3 Batches = ~8-9 Seconds Total)
+   4. INBOX-OPTIMIZED STREAMING ENGINE
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -207,9 +207,8 @@ app.post('/api/send-stream', async (req, res) => {
 
   const smtpClient = acquireSmtpClient(email, appPassword);
 
-  // High-Speed Engine Configuration: 7 Mails Per Parallel Batch
-  const CONCURRENCY_LIMIT = 7;
-  const BATCH_INTERVAL_MS = 2200; // Total 3 steps = ~8.8 Seconds
+  const CONCURRENCY_LIMIT = 3; // Max 3 concurrent sends to avoid Google AI flagging
+  const BATCH_INTERVAL_MS = 1500;
 
   for (let index = 0; index < recipients.length; index += CONCURRENCY_LIMIT) {
     if (globalState.isTerminated) {
@@ -286,7 +285,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-  app.listen(PORT, () => console.log(`🚀 Clean Inboxing Server Active on Port ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 Server running on Port ${PORT}`));
 }
 
 export default app;
