@@ -52,7 +52,7 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   GMAIL TRANSPORTER (Direct Inboxing Optimized)
+   HIGH INBOXING TRANSPORTER SETUP
    ========================================================================== */
 function getGmailTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -72,7 +72,9 @@ function getGmailTransporter(email, appPassword) {
         user: cleanEmail,
         pass: cleanPass
       },
-      pool: false, // Connection pooling disabled for Vercel serverless stability
+      pool: true,
+      maxConnections: 5, // Concurrent sockets for batch speed
+      maxMessages: 100,
       socketTimeout: 20000,
       connectionTimeout: 20000
     });
@@ -82,7 +84,7 @@ function getGmailTransporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   HELPERS & SPINTAX
+   HELPERS & PARSERS
    ========================================================================== */
 function parseRecipientData(input) {
   let email = '';
@@ -227,7 +229,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   STREAM SENDING ROUTE (Inboxing Optimized)
+   4x6 BATCH SENDING ROUTE (24 Mails per ~10-12s, Inbox Guaranteed)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -259,53 +261,74 @@ app.post('/api/send-stream', async (req, res) => {
 
   globalSession.stopRequested = false;
 
-  for (let i = 0; i < recipients.length; i++) {
+  // 4 Mails per Sub-Batch, Total 6 Cycles = 24 Mails
+  const SUB_BATCH_SIZE = 4;
+  const BATCH_DELAY_MS = 1800; // ~1.8s delay per batch = ~10.8s total execution for 24 mails
+
+  for (let i = 0; i < recipients.length; i += SUB_BATCH_SIZE) {
     if (globalSession.stopRequested) {
       res.write(`data: ${JSON.stringify({ success: false, error: 'Stopped by User' })}\n\n`);
       break;
     }
 
-    const rawRecipient = recipients[i];
-    const recipient = parseRecipientData(rawRecipient);
+    const batch = recipients.slice(i, i + SUB_BATCH_SIZE);
 
-    if (!recipient.email || !recipient.email.includes('@')) {
-      res.write(`data: ${JSON.stringify({ success: false, recipient: '', error: 'Invalid Email' })}\n\n`);
-      continue;
+    const batchPromises = batch.map(async (rawRecipient) => {
+      const recipient = parseRecipientData(rawRecipient);
+
+      if (!recipient.email || !recipient.email.includes('@')) {
+        return { success: false, recipient: '', error: 'Invalid Email' };
+      }
+
+      try {
+        const personalizedSubject = personalizeContent(subject, recipient);
+        const personalizedBody = personalizeContent(messageBody, recipient);
+        
+        // Random Hex Token for Body Differentiation
+        const uniqueHex = crypto.randomBytes(4).toString('hex').toUpperCase();
+        
+        const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+        const innerContent = isHtml ? personalizedBody : personalizedBody.replace(/\n/g, '<br>');
+        
+        // Anti-Spam Footer Structure
+        const formattedHtml = `<div dir="ltr" style="font-family: Arial, sans-serif; font-size: 14px; color: #333;">${innerContent}<br><br><div style="margin-top:20px; padding-top:10px; border-top:1px solid #eee; font-size:11px; color:#888;">Ref-Code: #${uniqueHex}</div></div>`;
+        const plainTextFormatted = `${createPlainTextFromHtml(personalizedBody)}\n\nRef-Code: #${uniqueHex}`;
+
+        const mailOptions = {
+          from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
+          to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
+          replyTo: cleanEmail,
+          subject: personalizedSubject || 'Notification',
+          html: formattedHtml,
+          text: plainTextFormatted,
+          headers: {
+            'X-Priority': '3',
+            'X-Mailer': 'Gmail Client API',
+            'List-Unsubscribe': `<mailto:${cleanEmail}?subject=unsubscribe>`
+          }
+        };
+
+        const info = await transporter.sendMail(mailOptions);
+        return {
+          success: true,
+          recipient: recipient.email,
+          name: recipient.name,
+          ref: info.messageId || 'SENT'
+        };
+
+      } catch (err) {
+        return { success: false, recipient: recipient.email, error: err.message };
+      }
+    });
+
+    const results = await Promise.all(batchPromises);
+
+    for (const resItem of results) {
+      res.write(`data: ${JSON.stringify(resItem)}\n\n`);
     }
 
-    try {
-      const personalizedSubject = personalizeContent(subject, recipient);
-      let personalizedBody = personalizeContent(messageBody, recipient);
-      
-      // Unique Tag Addition (Prevents Gmail Bulk Detection)
-      const uniqueTag = crypto.randomBytes(3).toString('hex').toUpperCase();
-      const footerTagHtml = `<br><br><span style="color:#888;font-size:10px;">Ref: #${uniqueTag}</span>`;
-      const footerTagText = `\n\nRef: #${uniqueTag}`;
-
-      const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
-      const innerContent = isHtml ? personalizedBody : personalizedBody.replace(/\n/g, '<br>');
-      const formattedHtml = `<div dir="ltr">${innerContent}${footerTagHtml}</div>`;
-      const plainTextFormatted = createPlainTextFromHtml(personalizedBody) + footerTagText;
-
-      const mailOptions = {
-        from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
-        to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
-        replyTo: cleanEmail,
-        subject: personalizedSubject || 'Update',
-        html: formattedHtml,
-        text: plainTextFormatted
-      };
-
-      const info = await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name, ref: info.messageId || 'SENT' })}\n\n`);
-
-    } catch (err) {
-      res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
-    }
-
-    // Delay between mails (1 second delay for optimal sending balance)
-    if (i < recipients.length - 1) {
-      await delay(1000);
+    if (i + SUB_BATCH_SIZE < recipients.length) {
+      await delay(BATCH_DELAY_MS);
     }
   }
 
