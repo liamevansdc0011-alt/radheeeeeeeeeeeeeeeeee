@@ -23,7 +23,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. HIGH DELIVERABILITY TRANSPORTER (OPTIMIZED GMAIL POOL)
+   1. CLEAN GMAIL TRANSPORTER
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -34,7 +34,7 @@ function getPort587Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 465,
-      secure: true, // SSL Connection for clean handshake
+      secure: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
@@ -53,19 +53,8 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. ORGANIC CTA & PARSERS
+   2. PARSERS & PERSONALIZATION
    ========================================================================== */
-function getOrganicCallToAction() {
-  const ctas = [
-    "Would love to hear your thoughts on this.",
-    "Let me know if this sounds relevant to you right now.",
-    "Feel free to reply directly to this mail if you have any questions.",
-    "Looking forward to your thoughts whenever you get a moment.",
-    "Do you have 2 minutes for a brief response on this?"
-  ];
-  return ctas[Math.floor(Math.random() * ctas.length)];
-}
-
 function parseRecipientData(input) {
   let email = "";
   let rawName = "";
@@ -195,7 +184,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. BATCH STREAMING ENGINE (4 Mails/Batch | Total ~10 Secs Execution)
+   4. BATCH STREAMING ENGINE (4 Mails/Batch | 10 Sec Speed maintained)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -221,9 +210,9 @@ app.post('/api/send-stream', async (req, res) => {
 
   const transporter = getPort587Transporter(email, appPassword);
 
-  // Batching logic: 4 Mails per Sub-batch
+  // 4 Mails per Batch | Total 24 Mails in ~10 Seconds
   const SUB_BATCH_SIZE = 4;
-  const BATCH_DELAY = 1800; // 1.8 seconds delay between sub-batches
+  const BATCH_DELAY = 1800;
 
   for (let i = 0; i < recipients.length; i += SUB_BATCH_SIZE) {
     if (globalSession.stopRequested) {
@@ -244,9 +233,7 @@ app.post('/api/send-stream', async (req, res) => {
         const personalizedSubject = personalizeContent(subject, recipient);
         const personalizedBody = personalizeContent(messageBody, recipient);
         const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
-        const organicCTA = getOrganicCallToAction();
 
-        // Native Clean Message-ID
         const messageIdDomain = cleanEmail.split('@')[1] || 'gmail.com';
         const messageId = `<${crypto.randomBytes(8).toString('hex')}.${Date.now()}@${messageIdDomain}>`;
 
@@ -260,17 +247,10 @@ app.post('/api/send-stream', async (req, res) => {
         };
 
         if (isHtml) {
-          const bodyFormatted = `
-            <div dir="ltr" style="font-family: Arial, sans-serif; font-size: 14px; color: #222222; line-height: 1.5;">
-              ${personalizedBody}
-              <br><br>
-              <p style="font-size: 13px; color: #444444;">${organicCTA}</p>
-            </div>
-          `;
-          mailOptions.html = bodyFormatted;
-          mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}`;
+          mailOptions.html = personalizedBody;
+          mailOptions.text = createPlainTextFromHtml(personalizedBody);
         } else {
-          mailOptions.text = personalizedBody + `\n\n${organicCTA}`;
+          mailOptions.text = personalizedBody;
         }
 
         const info = await transporter.sendMail(mailOptions);
