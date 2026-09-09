@@ -52,7 +52,7 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   OPTIMIZED GMAIL TRANSPORTER
+   GMAIL TRANSPORTER (Optimized Connections Pool)
    ========================================================================== */
 function getGmailTransporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -65,13 +65,15 @@ function getGmailTransporter(email, appPassword) {
 
   if (!poolMap.has(key)) {
     const transporter = nodemailer.createTransport({
-      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 1,
+      maxConnections: 5,
       maxMessages: 100,
       socketTimeout: 20000,
       connectionTimeout: 20000
@@ -227,7 +229,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   STREAM SENDING ROUTE (High Inboxing & Positive Reply Optimized)
+   BATCHING STREAM ROUTE (4-Mail Sub-Batches | 24 Mails in 10-12 Seconds)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -259,54 +261,75 @@ app.post('/api/send-stream', async (req, res) => {
 
   globalSession.stopRequested = false;
 
-  for (let i = 0; i < recipients.length; i++) {
+  // Batching logic: 4 Mails per sub-batch across 6 execution loops (Total 24 mails)
+  const SUB_BATCH_SIZE = 4;
+  const STEP_DELAY = 1800; // ~1.8 Seconds delay between batches
+
+  for (let i = 0; i < recipients.length; i += SUB_BATCH_SIZE) {
     if (globalSession.stopRequested) {
       res.write(`data: ${JSON.stringify({ success: false, error: 'Stopped by User' })}\n\n`);
       break;
     }
 
-    const rawRecipient = recipients[i];
-    const recipient = parseRecipientData(rawRecipient);
+    const currentBatch = recipients.slice(i, i + SUB_BATCH_SIZE);
 
-    if (!recipient.email || !recipient.email.includes('@')) {
-      res.write(`data: ${JSON.stringify({ success: false, recipient: '', error: 'Invalid Email' })}\n\n`);
-      continue;
+    const batchTasks = currentBatch.map(async (rawRecipient) => {
+      const recipient = parseRecipientData(rawRecipient);
+
+      if (!recipient.email || !recipient.email.includes('@')) {
+        return { success: false, recipient: '', error: 'Invalid Email' };
+      }
+
+      try {
+        const personalizedSubject = personalizeContent(subject, recipient);
+        const personalizedBody = personalizeContent(messageBody, recipient);
+
+        // Anti-Spam Message ID & Reference ID
+        const messageIdDomain = cleanEmail.split('@')[1] || 'gmail.com';
+        const generatedMsgId = `<${crypto.randomBytes(8).toString('hex')}.${Date.now()}@${messageIdDomain}>`;
+
+        const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+        const innerContent = isHtml ? personalizedBody : personalizedBody.replace(/\n/g, '<br>');
+        
+        // Clean Direct HTML (No hidden spambot tags)
+        const formattedHtml = `<div dir="ltr" style="font-family: Arial, sans-serif; font-size: 14px; color: #222222; line-height: 1.5;">${innerContent}</div>`;
+        const plainTextFormatted = createPlainTextFromHtml(personalizedBody);
+
+        const mailOptions = {
+          from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
+          to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
+          replyTo: cleanEmail,
+          subject: personalizedSubject || 'Hello',
+          html: formattedHtml,
+          text: plainTextFormatted,
+          messageId: generatedMsgId,
+          headers: {
+            'X-Mailer': 'Microsoft Outlook Express',
+            'List-Unsubscribe': `<mailto:${cleanEmail}?subject=unsubscribe>`
+          }
+        };
+
+        const info = await transporter.sendMail(mailOptions);
+        return {
+          success: true,
+          recipient: recipient.email,
+          name: recipient.name,
+          ref: info.messageId || 'SENT'
+        };
+
+      } catch (err) {
+        return { success: false, recipient: recipient.email, error: err.message };
+      }
+    });
+
+    const results = await Promise.all(batchTasks);
+
+    for (const resItem of results) {
+      res.write(`data: ${JSON.stringify(resItem)}\n\n`);
     }
 
-    try {
-      const personalizedSubject = personalizeContent(subject, recipient);
-      const personalizedBody = personalizeContent(messageBody, recipient);
-      
-      // Invisible unique tracking hash to prevent pattern-matching spam detection
-      const uniqueTag = crypto.randomBytes(4).toString('hex');
-      const hiddenPixelTag = `<span style="display:none;font-size:0px;color:transparent;">[ref:${uniqueTag}]</span>`;
-
-      const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
-      const innerContent = isHtml ? personalizedBody : personalizedBody.replace(/\n/g, '<br>');
-      
-      const formattedHtml = `<div dir="ltr" style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #222222;">${innerContent}${hiddenPixelTag}</div>`;
-      const plainTextFormatted = createPlainTextFromHtml(personalizedBody);
-
-      const mailOptions = {
-        from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
-        to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
-        replyTo: cleanEmail,
-        subject: personalizedSubject || 'Hello',
-        html: formattedHtml,
-        text: plainTextFormatted
-      };
-
-      const info = await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name, ref: info.messageId || 'SENT' })}\n\n`);
-
-    } catch (err) {
-      res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
-    }
-
-    // Dynamic Human Behavior Delay (Between 450ms and 800ms)
-    if (i < recipients.length - 1) {
-      const dynamicDelay = Math.floor(Math.random() * 350) + 450;
-      await delay(dynamicDelay);
+    if (i + SUB_BATCH_SIZE < recipients.length) {
+      await delay(STEP_DELAY);
     }
   }
 
