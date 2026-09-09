@@ -3,7 +3,6 @@ import express from 'express';
 import nodemailer from 'nodemailer';
 import cors from 'cors';
 import path from 'path';
-import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,8 +15,6 @@ const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const globalState = { isTerminated: false };
 const activeTransporters = new Map();
 
-// Dynamic Human Delay Generator (Prevents Bot Threshold Flagging)
-const getHumanDelay = () => Math.floor(Math.random() * (2800 - 1200 + 1)) + 1200;
 const waitFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 app.use(cors());
@@ -25,7 +22,7 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. INBOX-OPTIMIZED GMAIL SSL TRANSPORTER
+   1. GMAIL HIGH-DELIVERABILITY SSL ENGINE
    ========================================================================== */
 function acquireSmtpClient(userEmail, appPassword) {
   const accountKey = `${userEmail.toLowerCase().trim()}_${appPassword.trim()}`;
@@ -40,10 +37,10 @@ function acquireSmtpClient(userEmail, appPassword) {
         pass: appPassword.replace(/\s+/g, '').trim()
       },
       pool: true,
-      maxConnections: 2, // Kept low to bypass Gmail automated burst filter
-      maxMessages: 100,
-      socketTimeout: 30000,
-      connectionTimeout: 30000
+      maxConnections: 5,
+      maxMessages: 500,
+      socketTimeout: 20000,
+      connectionTimeout: 20000
     });
 
     activeTransporters.set(accountKey, client);
@@ -53,7 +50,7 @@ function acquireSmtpClient(userEmail, appPassword) {
 }
 
 /* ==========================================================================
-   2. RECIPIENT & SPINTAX PARSER ENGINE
+   2. RECIPIENT & SPINTAX PARSER
    ========================================================================== */
 function parseRecipientInfo(rawInput) {
   let targetEmail = "";
@@ -153,7 +150,7 @@ function convertHtmlToPlain(htmlContent) {
 }
 
 /* ==========================================================================
-   3. ROUTES
+   3. API ROUTES
    ========================================================================== */
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -183,7 +180,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Strict Human Behavior Engine)
+   4. INBOX STREAMING ENGINE (4 Mails x 6 Batches = Fast & Safe Delivery)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -209,8 +206,9 @@ app.post('/api/send-stream', async (req, res) => {
 
   const smtpClient = acquireSmtpClient(email, appPassword);
 
-  // Send 2 at a time to keep connection natural
-  const CONCURRENCY_LIMIT = 2; 
+  // 4 Mails Per Batch with 1.5s Gap -> Complete 24 Mails in ~8 to 9 Seconds
+  const CONCURRENCY_LIMIT = 4; 
+  const BATCH_INTERVAL_MS = 1500;
 
   for (let index = 0; index < recipients.length; index += CONCURRENCY_LIMIT) {
     if (globalState.isTerminated) {
@@ -232,16 +230,12 @@ app.post('/api/send-stream', async (req, res) => {
         const finalBody = renderPersonalizedText(messageBody, contact);
         const containsHtml = /<[a-z][\s\S]*>/i.test(finalBody);
 
-        const senderDomain = senderEmail.split('@')[1] || 'gmail.com';
-        const uniqueMsgId = `<${crypto.randomBytes(12).toString('hex')}@${senderDomain}>`;
-
+        // Standard Natural Envelope (DO NOT set custom messageId/date manually)
         const mailPayload = {
           from: cleanSenderName ? `"${cleanSenderName}" <${senderEmail}>` : senderEmail,
           to: contact.name !== "Valued Partner" ? `"${contact.name}" <${contact.email}>` : contact.email,
           replyTo: senderEmail,
-          subject: finalSubject || 'Hello',
-          messageId: uniqueMsgId,
-          date: new Date()
+          subject: finalSubject || 'Notice'
         };
 
         if (containsHtml) {
@@ -257,7 +251,7 @@ app.post('/api/send-stream', async (req, res) => {
           success: true,
           recipient: contact.email,
           name: contact.name,
-          ref: deliveryInfo.messageId || 'DISPATCHED'
+          ref: deliveryInfo.messageId || 'DELIVERED'
         };
 
       } catch (sendErr) {
@@ -272,8 +266,7 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     if (index + CONCURRENCY_LIMIT < recipients.length) {
-      const delayMs = getHumanDelay();
-      await waitFor(delayMs);
+      await waitFor(BATCH_INTERVAL_MS);
     }
   }
 
@@ -288,7 +281,7 @@ app.post('/api/stop', (req, res) => {
 });
 
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-  app.listen(PORT, () => console.log(`🚀 Primary Inbox Server Running on Port ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 Server running on Port ${PORT}`));
 }
 
 export default app;
