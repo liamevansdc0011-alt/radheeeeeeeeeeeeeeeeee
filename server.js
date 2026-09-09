@@ -16,31 +16,34 @@ const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const globalSession = { stopRequested: false };
 const poolMap = new Map();
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ==========================================================================
-   1. HIGH DELIVERABILITY TRANSPORTER (STARTTLS + SMTP POOL)
+   1. HIGH DELIVERABILITY TRANSPORTER (OPTIMIZED GMAIL POOL)
    ========================================================================== */
 function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
-  const key = `port587_${cleanEmail}_${appPassword}`;
+  const cleanPass = appPassword.replace(/\s+/g, '').trim();
+  const key = `gmail_pool_${cleanEmail}_${cleanPass}`;
 
   if (!poolMap.has(key)) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
-      port: 587,
-      secure: false, // TLS via STARTTLS
-      requireTLS: true,
+      port: 465,
+      secure: true, // SSL Connection for clean handshake
       auth: {
         user: cleanEmail,
-        pass: appPassword
+        pass: cleanPass
       },
       pool: true,
-      maxConnections: 3,
+      maxConnections: 5,
       maxMessages: 500,
-      rateLimit: 1 // Max 1 mail per second
+      socketTimeout: 30000,
+      connectionTimeout: 30000
     });
 
     poolMap.set(key, transporter);
@@ -50,20 +53,8 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. ANTI-SPAM & HUMAN BEHAVIOR ENGINES
+   2. ORGANIC CTA & PARSERS
    ========================================================================== */
-
-// Invisible HTML Fingerprint: Spammers rely on duplicate text. This adds invisible zero-width variations.
-function generateInvisibleFingerprint() {
-  const zwChars = ['\u200B', '\u200C', '\u200D', '\uFEFF'];
-  let fingerprint = '';
-  for (let i = 0; i < 10; i++) {
-    fingerprint += zwChars[Math.floor(Math.random() * zwChars.length)];
-  }
-  return fingerprint;
-}
-
-// Organic Closing Lines: Increases user response rate automatically
 function getOrganicCallToAction() {
   const ctas = [
     "Would love to hear your thoughts on this.",
@@ -124,7 +115,7 @@ function parseRecipientData(input) {
 
 function parseSpintax(text) {
   if (!text) return "";
-  let spun = text;
+  let spun = String(text);
   const regex = /{([^{}]+)}/g;
   let iterations = 0;
 
@@ -132,11 +123,12 @@ function parseSpintax(text) {
     spun = spun.replace(regex, (_, choices) => {
       if (!choices.includes('|')) return `{${choices}}`;
       const options = choices.split('|');
-      return options[Math.floor(Math.random() * options.length)];
+      const pick = options[Math.floor(Math.random() * options.length)];
+      return pick ? pick.trim() : '';
     });
     iterations++;
   }
-  return spun;
+  return spun.replace(/[\{\}]/g, '').trim();
 }
 
 function personalizeContent(template, recipient) {
@@ -203,7 +195,7 @@ app.post("/api/verify", async (req, res) => {
 });
 
 /* ==========================================================================
-   4. STREAMING ENGINE (Exactly 1-Second Speed + Guaranteed Inbox Routing)
+   4. BATCH STREAMING ENGINE (4 Mails/Batch | Total ~10 Secs Execution)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -220,75 +212,88 @@ app.post('/api/send-stream', async (req, res) => {
   }
 
   const cleanEmail = email.toLowerCase().trim();
-  const cleanSenderName = (senderName || "").replace(/"/g, "").trim();
-  const domainPart = cleanEmail.split('@')[1] || 'gmail.com';
+  const cleanSenderName = (senderName || "").replace(/["\r\n]/g, "").trim();
   globalSession.stopRequested = false;
 
   const keepAlivePing = setInterval(() => {
     res.write(': keep-alive\n\n');
-  }, 4000);
+  }, 3000);
 
   const transporter = getPort587Transporter(email, appPassword);
 
-  for (let i = 0; i < recipients.length; i++) {
+  // Batching logic: 4 Mails per Sub-batch
+  const SUB_BATCH_SIZE = 4;
+  const BATCH_DELAY = 1800; // 1.8 seconds delay between sub-batches
+
+  for (let i = 0; i < recipients.length; i += SUB_BATCH_SIZE) {
     if (globalSession.stopRequested) {
       res.write(`data: ${JSON.stringify({ success: false, error: "Stopped by User" })}\n\n`);
       break;
     }
 
-    const recipient = parseRecipientData(recipients[i]);
-    if (!recipient.email) continue;
+    const currentBatch = recipients.slice(i, i + SUB_BATCH_SIZE);
 
-    try {
-      const personalizedSubject = personalizeContent(subject, recipient);
-      const personalizedBody = personalizeContent(messageBody, recipient);
-      const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+    const batchTasks = currentBatch.map(async (rawRecipient) => {
+      const recipient = parseRecipientData(rawRecipient);
 
-      const invisibleHash = generateInvisibleFingerprint();
-      const organicCTA = getOrganicCallToAction();
-      
-      // Unique Compliant Message-ID
-      const messageId = `<${crypto.randomBytes(12).toString('hex')}.${Date.now()}@${domainPart}>`;
-
-      const mailOptions = {
-        from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
-        to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
-        replyTo: cleanEmail,
-        subject: personalizedSubject,
-        messageId: messageId,
-        date: new Date(),
-        headers: {
-          'X-Mailer': 'Microsoft Outlook 16.0',
-          'X-Priority': '3 (Normal)',
-          'List-Unsubscribe': `<mailto:${cleanEmail}?subject=Unsubscribe>`,
-          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
-        }
-      };
-
-      if (isHtml) {
-        const bodyWithPsAndHash = `
-          ${personalizedBody}
-          <br><br>
-          <p style="font-size: 13px; color: #333333; margin-top: 15px;">${organicCTA}</p>
-          <span style="display:none !important; font-size:0px; line-height:0px; opacity:0;">${invisibleHash}</span>
-        `;
-        mailOptions.html = bodyWithPsAndHash;
-        mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}`;
-      } else {
-        mailOptions.text = personalizedBody + `\n\n${organicCTA}` + invisibleHash;
+      if (!recipient.email || !recipient.email.includes('@')) {
+        return { success: false, recipient: '', error: "Invalid Email" };
       }
 
-      await transporter.sendMail(mailOptions);
-      res.write(`data: ${JSON.stringify({ success: true, recipient: recipient.email, name: recipient.name })}\n\n`);
+      try {
+        const personalizedSubject = personalizeContent(subject, recipient);
+        const personalizedBody = personalizeContent(messageBody, recipient);
+        const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
+        const organicCTA = getOrganicCallToAction();
 
-    } catch (err) {
-      console.error(`Send Failure [${recipient.email}]:`, err.message);
-      res.write(`data: ${JSON.stringify({ success: false, recipient: recipient.email, error: err.message })}\n\n`);
+        // Native Clean Message-ID
+        const messageIdDomain = cleanEmail.split('@')[1] || 'gmail.com';
+        const messageId = `<${crypto.randomBytes(8).toString('hex')}.${Date.now()}@${messageIdDomain}>`;
+
+        const mailOptions = {
+          from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
+          to: recipient.name !== "Valued Partner" ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
+          replyTo: cleanEmail,
+          subject: personalizedSubject || 'Hello',
+          messageId: messageId,
+          date: new Date()
+        };
+
+        if (isHtml) {
+          const bodyFormatted = `
+            <div dir="ltr" style="font-family: Arial, sans-serif; font-size: 14px; color: #222222; line-height: 1.5;">
+              ${personalizedBody}
+              <br><br>
+              <p style="font-size: 13px; color: #444444;">${organicCTA}</p>
+            </div>
+          `;
+          mailOptions.html = bodyFormatted;
+          mailOptions.text = createPlainTextFromHtml(personalizedBody) + `\n\n${organicCTA}`;
+        } else {
+          mailOptions.text = personalizedBody + `\n\n${organicCTA}`;
+        }
+
+        const info = await transporter.sendMail(mailOptions);
+        return {
+          success: true,
+          recipient: recipient.email,
+          name: recipient.name,
+          ref: info.messageId || 'SENT'
+        };
+
+      } catch (err) {
+        return { success: false, recipient: recipient.email, error: err.message };
+      }
+    });
+
+    const results = await Promise.all(batchTasks);
+
+    for (const resItem of results) {
+      res.write(`data: ${JSON.stringify(resItem)}\n\n`);
     }
 
-    // Exact 1-Second Delay Per Mail
-    if (i < recipients.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    if (i + SUB_BATCH_SIZE < recipients.length) {
+      await delay(BATCH_DELAY);
     }
   }
 
@@ -302,8 +307,8 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, message: "Sending process stopped" });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on Port ${PORT} [1-Second Inbox Engine Active]`);
-});
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  app.listen(PORT, () => console.log(`🚀 Server running on Port ${PORT}`));
+}
 
 export default app;
