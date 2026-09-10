@@ -3,7 +3,6 @@ const nodemailer = require('nodemailer');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
@@ -62,7 +61,7 @@ async function verifyTurnstile(token) {
     }
 }
 
-// INBOX DELIVERY WITH HIDDEN TRACKING ID
+// BATCH DISPATCH ENDPOINT (24 emails in ~10-12 seconds)
 app.post('/api/send-stream', async (req, res) => {
     const { senderName, email, appPassword, subject, body, recipients, cfToken, authToken } = req.body;
 
@@ -87,6 +86,7 @@ app.post('/api/send-stream', async (req, res) => {
         res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
+    // Nodemailer connection pool configured for rapid dispatch
     const transporter = nodemailer.createTransport({
         service: 'gmail',
         pool: true,
@@ -113,6 +113,7 @@ app.post('/api/send-stream', async (req, res) => {
 
     sendSSE({ type: 'start', total });
 
+    // 8 emails per batch (3 batches = 24 emails in ~10 seconds)
     const BATCH_SIZE = 8;
 
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
@@ -130,13 +131,7 @@ app.post('/api/send-stream', async (req, res) => {
             }
 
             const dynamicSubject = parseSpintax(subject);
-            let dynamicBody = parseSpintax(body);
-
-            // Hidden Unique Anti-Spam Code (Not visible in email reader UI)
-            const uniqueRef = `TX-${Math.floor(10000 + Math.random() * 90000)}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
-            const hiddenFooter = `<div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; mso-hide:all;">[Ref:${uniqueRef}]</div>`;
-            
-            const finalHtml = dynamicBody + hiddenFooter;
+            const dynamicBody = parseSpintax(body);
             const plainText = stripHtml(dynamicBody);
 
             const mailOptions = {
@@ -145,7 +140,7 @@ app.post('/api/send-stream', async (req, res) => {
                 replyTo: email,
                 subject: dynamicSubject,
                 text: plainText,
-                html: finalHtml
+                html: dynamicBody
             };
 
             try {
