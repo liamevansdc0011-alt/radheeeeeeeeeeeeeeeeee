@@ -18,7 +18,6 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
-const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
 
 const activeSessions = new Set();
 const poolMap = new Map();
@@ -47,7 +46,7 @@ function getPort465Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 465,
-      secure: true, // Native SSL Connection (Anti-Spam Filter Compliant)
+      secure: true, // Direct SSL Connection (Inboxing High Trust)
       auth: {
         user: cleanEmail,
         pass: cleanPass
@@ -188,7 +187,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   4. INBOX OPTIMIZED SEND STREAM ROUTE
+   4. INBOX OPTIMIZED STREAMING ENGINE
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -247,7 +246,7 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     try {
-      // Safe Humanized Random Delays (1.2s to 2.2s)
+      // Safe Delay for Natural Human-like Sending (1.2s - 2.2s)
       const randomDelay = Math.floor(Math.random() * 1000) + 1200;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
@@ -261,7 +260,7 @@ app.post('/api/send-stream', async (req, res) => {
         ? personalizedBody
         : personalizedBody.replace(/\n/g, '<br>');
 
-      // FIXED: REMOVED TRACKING REF ID SO GOOGLE SPAM FILTERS PASS THE EMAIL
+      // Clean Mail Payload without Spam-Triggering Tracking Footprints
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
