@@ -46,7 +46,7 @@
         <header class="app-header">
             <h1><i class="fa-solid fa-shield-halved"></i> Secure Mail Console</h1>
             <button type="button" id="logout-btn" class="btn-logout" title="Double click to logout">
-                <i class="fa-solid fa-right-from-bracket"></i> Logout (Double Click)
+                <i class="fa-solid fa-right-from-bracket"></i> Logout
             </button>
         </header>
 
@@ -90,7 +90,7 @@
 
                         <div class="form-group flex-grow">
                             <label for="message-body">Message Body (Plain Text / HTML)</label>
-                            <textarea id="message-body" placeholder="Write your email here... Spintax supported: {Hi|Hello} {name}" required></textarea>
+                            <textarea id="message-body" placeholder="Write your email here... Spintax supported: {Hi|Hello} {Name}" required></textarea>
                         </div>
                         
                         <div class="form-group" style="margin-top: 0.5rem; margin-bottom: 0;">
@@ -145,6 +145,11 @@
                         <div class="status-indicator">
                             <i id="status-icon" class="fa-solid fa-circle-pause text-muted"></i>
                             <span id="status-text">Ready to send</span>
+                        </div>
+
+                        <!-- Live Delivery Activity Terminal -->
+                        <div id="logs-container" class="logs-container">
+                            <div class="log-entry system"><i class="fa-solid fa-info-circle"></i> System Ready...</div>
                         </div>
 
                         <div class="control-buttons">
