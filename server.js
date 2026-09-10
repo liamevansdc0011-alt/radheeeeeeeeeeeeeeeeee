@@ -61,7 +61,7 @@ async function verifyTurnstile(token) {
     }
 }
 
-// NO-REF ID HIGH INBOX DISPATCH ENDPOINT (24 emails in ~10 seconds)
+// CLEAN INBOX DISPATCH (NO REF ID - FAST BATCHING)
 app.post('/api/send-stream', async (req, res) => {
     const { senderName, email, appPassword, subject, body, recipients, cfToken, authToken } = req.body;
 
@@ -86,7 +86,7 @@ app.post('/api/send-stream', async (req, res) => {
         res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    // Nodemailer connection pool tuned for Gmail high inboxing
+    // Nodemailer SMTP Pool setup
     const transporter = nodemailer.createTransport({
         service: 'gmail',
         pool: true,
@@ -113,7 +113,7 @@ app.post('/api/send-stream', async (req, res) => {
 
     sendSSE({ type: 'start', total });
 
-    // Exact 8 Mails batch (3 Batches = 24 Mails in ~10 Seconds)
+    // 8 emails per batch (3 Batches = 24 emails in ~10 seconds)
     const BATCH_SIZE = 8;
 
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
@@ -130,7 +130,7 @@ app.post('/api/send-stream', async (req, res) => {
                 targetEmail = String(recipientItem).trim();
             }
 
-            // Clean Spintax output (No extra IDs added anywhere)
+            // Pure dynamic content without any extra Ref IDs
             const dynamicSubject = parseSpintax(subject);
             const dynamicBody = parseSpintax(body);
             const plainText = stripHtml(dynamicBody);
@@ -142,7 +142,6 @@ app.post('/api/send-stream', async (req, res) => {
                 subject: dynamicSubject,
                 text: plainText,
                 html: dynamicBody,
-                // Natural Headers to bypass Gmail/Outlook Bulk Filters
                 headers: {
                     'X-Priority': '3',
                     'X-MSMail-Priority': 'Normal'
