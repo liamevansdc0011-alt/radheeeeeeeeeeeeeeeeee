@@ -61,7 +61,7 @@ async function verifyTurnstile(token) {
     }
 }
 
-// Optimized Batch Delivery Endpoint (Delivers ~24 emails in 10-11 seconds)
+// ULTRA-FAST BATCH DISPATCH ENDPOINT (24 emails in ~10-12 seconds)
 app.post('/api/send-stream', async (req, res) => {
     const { senderName, email, appPassword, subject, body, recipients, cfToken, authToken } = req.body;
 
@@ -86,14 +86,14 @@ app.post('/api/send-stream', async (req, res) => {
         res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    // Pooling optimized for speed and parallel SMTP execution
+    // Parallel Nodemailer Pool setup for max speed
     const transporter = nodemailer.createTransport({
         service: 'gmail',
         pool: true,
-        maxConnections: 5,
-        maxMessages: 200,
+        maxConnections: 10, // Max sockets allowed
+        maxMessages: 500,
         rateDelta: 1000,
-        rateLimit: 5,
+        rateLimit: 12,      // Max 12 sends per second
         auth: {
             user: email.trim().toLowerCase(),
             pass: appPassword.replace(/\s+/g, '')
@@ -113,8 +113,8 @@ app.post('/api/send-stream', async (req, res) => {
 
     sendSSE({ type: 'start', total });
 
-    // Batch size set to 6 for optimum throughput (24 mails in ~10 seconds)
-    const BATCH_SIZE = 6;
+    // 12 Emails per batch (24 emails will finish in exactly 2 batches / ~10 sec)
+    const BATCH_SIZE = 12;
 
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
@@ -133,9 +133,7 @@ app.post('/api/send-stream', async (req, res) => {
             const dynamicSubject = parseSpintax(subject);
             const dynamicBody = parseSpintax(body);
             const plainText = stripHtml(dynamicBody);
-            const domain = email.split('@')[1] || 'gmail.com';
 
-            // High Inboxing Clean Headers
             const mailOptions = {
                 from: senderName ? `"${senderName}" <${email}>` : email,
                 to: targetName ? `"${targetName}" <${targetEmail}>` : targetEmail,
@@ -144,10 +142,9 @@ app.post('/api/send-stream', async (req, res) => {
                 text: plainText,
                 html: dynamicBody,
                 headers: {
-                    'X-Mailer': 'Microsoft Outlook Express 6.00.2900.2180',
+                    'X-Mailer': 'Apple Mail (2.3654.120.1)',
                     'X-Priority': '3',
-                    'X-MSMail-Priority': 'Normal',
-                    'Importance': 'Normal'
+                    'X-MSMail-Priority': 'Normal'
                 }
             };
 
@@ -159,6 +156,7 @@ app.post('/api/send-stream', async (req, res) => {
             }
         });
 
+        // Parallel dispatch of the entire batch
         const results = await Promise.all(batchPromises);
 
         results.forEach((resResult) => {
@@ -171,9 +169,9 @@ app.post('/api/send-stream', async (req, res) => {
             }
         });
 
-        // 2-second delay per 6 mails = 24 mails sent smoothly in ~10-11 seconds total
+        // 2.5 Second delay between 12-mail batches = Exact ~10-12s for 24 emails
         if (i + BATCH_SIZE < recipients.length) {
-            await new Promise((resolve) => setTimeout(resolve, 2000));
+            await new Promise((resolve) => setTimeout(resolve, 2500));
         }
     }
 
