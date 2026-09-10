@@ -59,9 +59,9 @@ async function verifyTurnstileToken(token, remoteIp) {
 }
 
 /* ==========================================================================
-   GMAIL TRANSPORTER POOL (Fixed Working Credentials & Fast Handshake)
+   GMAIL TRANSPORTER POOL (Port 587 Stable Fix)
    ========================================================================== */
-function getPort465Transporter(email, appPassword) {
+function getPort587Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
   const cleanPass = appPassword.replace(/\s+/g, '').trim();
   const key = `native_${cleanEmail}_${cleanPass}`;
@@ -76,15 +76,12 @@ function getPort465Transporter(email, appPassword) {
 
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
-      port: 465,
-      secure: true, 
+      port: 587,
+      secure: false, // TLS via STARTTLS
+      requireTLS: true,
       auth: {
         user: cleanEmail,
         pass: cleanPass
-      },
-      authMethod: 'PLAIN',
-      tls: {
-        rejectUnauthorized: false
       },
       pool: true,
       maxConnections: 1,
@@ -221,19 +218,19 @@ app.post('/api/verify', async (req, res) => {
   }
 
   try {
-    const transporter = getPort465Transporter(email, appPassword);
+    const transporter = getPort587Transporter(email, appPassword);
     await transporter.verify();
     return res.json({ success: true, message: 'SMTP verified successfully' });
   } catch (error) {
     return res.status(401).json({
       success: false,
-      message: error.message || 'SMTP Auth Failed. Check 16-char App Password.'
+      message: error?.message || 'SMTP Auth Failed. Check 16-char App Password.'
     });
   }
 });
 
 /* ==========================================================================
-   PRIMARY INBOX STREAMING ROUTE (Original Speed Restored & Working Delivery)
+   PRIMARY INBOX STREAMING ROUTE WITH ANTI-SPAM LOGIC
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -282,7 +279,7 @@ app.post('/api/send-stream', async (req, res) => {
     }
   }, 4000);
 
-  const transporter = getPort465Transporter(email, appPassword);
+  const transporter = getPort587Transporter(email, appPassword);
 
   for (let i = 0; i < recipients.length; i++) {
     if (isAborted || !activeSessions.has(sessionId)) {
@@ -303,7 +300,7 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     try {
-      // Original Speed Restored: Delay between 1.5s to 2.5s
+      // Humanized delay between 1.5s to 2.5s
       const randomDelay = Math.floor(Math.random() * 1000) + 1500;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
@@ -317,6 +314,7 @@ app.post('/api/send-stream', async (req, res) => {
         ? personalizedBody
         : personalizedBody.replace(/\n/g, '<br>');
 
+      // Anti-Spam Clean Body (Footprint Tracking ID Removed)
       const formattedHtml = `<div dir="ltr">${cleanBodyText}</div>`;
       const plainTextFormatted = createCleanPlainText(personalizedBody);
 
@@ -339,7 +337,8 @@ app.post('/api/send-stream', async (req, res) => {
       }
 
     } catch (err) {
-      const errPayload = { success: false, recipient: recipient.email, error: err.message };
+      const errorMessage = err?.message || err?.toString() || 'SMTP Delivery Failed';
+      const errPayload = { success: false, recipient: recipient.email, error: errorMessage };
       io.emit('mail_error', errPayload);
       
       if (!isAborted) {
@@ -366,6 +365,7 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, message: 'Sending process stopped' });
 });
 
+// UI Catch-All Route
 app.get('*', (req, res) => {
   res.sendFile(path.join(process.cwd(), 'public', 'index.html'));
 });
