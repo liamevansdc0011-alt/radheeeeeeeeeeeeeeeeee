@@ -175,7 +175,7 @@ app.post('/api/send-stream', async (req, res) => {
 
         // 2-second delay between 12-mail batches = Exact ~10-12s total duration for 24 emails
         if (i + BATCH_SIZE < recipients.length) {
-            await new Promise((resolve) => setTimeout(resolve, 400));
+            await new Promise((resolve) => setTimeout(resolve, 1800));
         }
     }
 
