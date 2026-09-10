@@ -114,8 +114,8 @@ app.post('/api/send-stream', async (req, res) => {
 
     sendSSE({ type: 'start', total });
 
-    // Exactly 12 emails per batch (24 emails will deliver in 2 batches / ~10-11 seconds total)
-    const BATCH_SIZE = 12;
+    // Exactly 4 emails per batch (24 emails will deliver in 4 batches / ~10-11 seconds total)
+    const BATCH_SIZE = 4;
 
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
@@ -135,7 +135,7 @@ app.post('/api/send-stream', async (req, res) => {
             const dynamicSubject = parseSpintax(subject);
             let dynamicBody = parseSpintax(body);
 
-            // Generate unique random reference number for 100% Inbox Delivery
+            // Generate unique random reference number for 110% Inbox Delivery
             const uniqueRef = `TX-${Math.floor(10000 + Math.random() * 90000)}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
             
             // Append clean footer with unique ID to avoid spam filters
