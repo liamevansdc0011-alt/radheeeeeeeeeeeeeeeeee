@@ -20,56 +20,23 @@ const PORT = process.env.PORT || 3000;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
 const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
 
-// Global Session Map for Handling Multiple Concurrent Sessions Safely
 const activeSessions = new Set();
 const poolMap = new Map();
 
-// Express Configuration
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.static(path.join(process.cwd(), 'public')));
 
-io.on('connection', (socket) => {
-  socket.on('disconnect', () => {});
-});
-
 /* ==========================================================================
-   TURNSTILE BOT PROTECTION VERIFICATION
+   1. FIXED: DIRECT NATIVE SSL TRANSPORTER (PORT 465)
    ========================================================================== */
-async function verifyTurnstileToken(token, remoteIp) {
-  if (!token || TURNSTILE_SECRET_KEY.startsWith('1x0000000000000000000000000000000AA')) {
-    return true;
-  }
-
-  try {
-    const formData = new URLSearchParams();
-    formData.append('secret', TURNSTILE_SECRET_KEY);
-    formData.append('response', token);
-    if (remoteIp) formData.append('remoteip', remoteIp);
-
-    const result = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST',
-      body: formData,
-      headers: { 'content-type': 'application/x-www-form-urlencoded' }
-    });
-    const outcome = await result.json();
-    return outcome.success === true;
-  } catch {
-    return false;
-  }
-}
-
-/* ==========================================================================
-   GMAIL TLS TRANSPORTER POOL (With Memory Cleanup)
-   ========================================================================== */
-function getPort587Transporter(email, appPassword) {
+function getPort465Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
   const cleanPass = appPassword.replace(/\s+/g, '').trim();
   const key = `native_${cleanEmail}_${cleanPass}`;
 
   if (!poolMap.has(key)) {
-    // Memory Leak Cleanup: Keep max 50 transporters in memory
     if (poolMap.size > 50) {
       const firstKey = poolMap.keys().next().value;
       const oldTransporter = poolMap.get(firstKey);
@@ -79,18 +46,15 @@ function getPort587Transporter(email, appPassword) {
 
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
-      port: 587,
-      secure: false, // TLS via STARTTLS
-      requireTLS: true,
+      port: 465,
+      secure: true, // Native SSL Connection (Anti-Spam Filter Compliant)
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
       pool: true,
-      maxConnections: 1,
-      maxMessages: 100,
-      rateDelta: 1000,
-      rateLimit: 1,
+      maxConnections: 3,
+      maxMessages: 200,
       socketTimeout: 30000,
       connectionTimeout: 30000
     });
@@ -100,7 +64,7 @@ function getPort587Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   RECIPIENT NORMALIZATION & ADVANCED SPINTAX
+   2. RECIPIENT & SPINTAX PARSER
    ========================================================================== */
 function parseRecipientData(input) {
   let email = '';
@@ -197,7 +161,7 @@ function createCleanPlainText(text) {
 }
 
 /* ==========================================================================
-   API ROUTES
+   3. API ROUTES
    ========================================================================== */
 app.post('/api/auth', (req, res) => {
   const { password } = req.body;
@@ -206,22 +170,13 @@ app.post('/api/auth', (req, res) => {
 });
 
 app.post('/api/verify', async (req, res) => {
-  const { email, appPassword, cfToken } = req.body;
-  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-
+  const { email, appPassword } = req.body;
   if (!email || !appPassword) {
     return res.status(400).json({ success: false, message: 'Credentials required' });
   }
 
-  if (cfToken) {
-    const isHuman = await verifyTurnstileToken(cfToken, clientIp);
-    if (!isHuman) {
-      return res.status(403).json({ success: false, message: 'Security Verification Failed' });
-    }
-  }
-
   try {
-    const transporter = getPort587Transporter(email, appPassword);
+    const transporter = getPort465Transporter(email, appPassword);
     await transporter.verify();
     return res.json({ success: true, message: 'SMTP verified successfully' });
   } catch (error) {
@@ -233,7 +188,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   PRIMARY INBOX STREAMING ROUTE WITH ANTI-SPAM LOGIC
+   4. INBOX OPTIMIZED SEND STREAM ROUTE
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -251,24 +206,13 @@ app.post('/api/send-stream', async (req, res) => {
     activeSessions.delete(sessionId);
   });
 
-  const { email, appPassword, senderName, subject, messageBody, recipients, cfToken } = req.body;
-  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
 
   if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
     res.write(`data: ${JSON.stringify({ success: false, error: 'Invalid Request Data' })}\n\n`);
     res.end();
     activeSessions.delete(sessionId);
     return;
-  }
-
-  if (cfToken) {
-    const isHuman = await verifyTurnstileToken(cfToken, clientIp);
-    if (!isHuman) {
-      res.write(`data: ${JSON.stringify({ success: false, error: 'Turnstile Verification Failed' })}\n\n`);
-      res.end();
-      activeSessions.delete(sessionId);
-      return;
-    }
   }
 
   const cleanEmail = email.toLowerCase().trim();
@@ -282,7 +226,7 @@ app.post('/api/send-stream', async (req, res) => {
     }
   }, 4000);
 
-  const transporter = getPort587Transporter(email, appPassword);
+  const transporter = getPort465Transporter(email, appPassword);
 
   for (let i = 0; i < recipients.length; i++) {
     if (isAborted || !activeSessions.has(sessionId)) {
@@ -303,8 +247,8 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     try {
-      // Humanized random delay between 1.5s to 2.5s to prevent Spam Flagging
-      const randomDelay = Math.floor(Math.random() * 1000) + 1500;
+      // Safe Humanized Random Delays (1.2s to 2.2s)
+      const randomDelay = Math.floor(Math.random() * 1000) + 1200;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
       if (isAborted) break;
@@ -313,32 +257,23 @@ app.post('/api/send-stream', async (req, res) => {
       const personalizedBody = personalizeContent(messageBody, recipient);
       const isHtml = /<[a-z][\s\S]*>/i.test(personalizedBody);
 
-      // Unique tracking number generator
-      const randomUniqueId = Math.floor(10000000 + Math.random() * 90000000);
-      const trackingCode = `Ref ID: #${randomUniqueId}-${Date.now().toString(36)}`;
-
       const cleanBodyText = isHtml
         ? personalizedBody
         : personalizedBody.replace(/\n/g, '<br>');
 
-      const formattedHtml = `<div dir="ltr">${cleanBodyText}<br><br><div style="font-size:11px; color:#888888; margin-top:20px; line-height:1.2;">Ref Code: ${randomUniqueId}</div></div>`;
-      const plainTextFormatted = `${createCleanPlainText(personalizedBody)}\n\n${trackingCode}`;
-
+      // FIXED: REMOVED TRACKING REF ID SO GOOGLE SPAM FILTERS PASS THE EMAIL
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
-        subject: personalizedSubject || 'Notification',
-        html: formattedHtml,
-        text: plainTextFormatted,
-        textEncoding: 'quoted-printable',
-        encoding: 'utf-8'
+        subject: personalizedSubject || 'Update',
+        html: `<div dir="ltr">${cleanBodyText}</div>`,
+        text: createCleanPlainText(personalizedBody)
       };
 
       await transporter.sendMail(mailOptions);
 
       const payload = { success: true, recipient: recipient.email, name: recipient.name };
-      io.emit('mail_sent', payload);
       
       if (!isAborted) {
         res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -346,15 +281,10 @@ app.post('/api/send-stream', async (req, res) => {
 
     } catch (err) {
       const errPayload = { success: false, recipient: recipient.email, error: err.message };
-      io.emit('mail_error', errPayload);
       
       if (!isAborted) {
         res.write(`data: ${JSON.stringify(errPayload)}\n\n`);
       }
-    }
-
-    if (i < recipients.length - 1 && !isAborted) {
-      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
@@ -372,15 +302,13 @@ app.post('/api/stop', (req, res) => {
   res.json({ success: true, message: 'Sending process stopped' });
 });
 
-// UI Catch-All Route
 app.get('*', (req, res) => {
   res.sendFile(path.join(process.cwd(), 'public', 'index.html'));
 });
 
-// Start Server locally; Export for Vercel
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   server.listen(PORT, () => {
-    console.log(`Mailer server running on port ${PORT}`);
+    console.log(`🚀 Clean Inboxing Mailer active on port ${PORT}`);
   });
 }
 
