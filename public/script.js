@@ -204,15 +204,17 @@ document.addEventListener('DOMContentLoaded', () => {
                         updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Sent: ${data.recipient}`);
                     } else {
                         failedCount++;
-                        updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Failed: ${data.recipient || currentRecipient}`);
+                        const errorMsg = data.error || 'Failed';
+                        updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Failed: ${data.recipient || currentRecipient} (${errorMsg})`);
                     }
                 } catch (e) {
                     failedCount++;
                     updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Failed: ${currentRecipient}`);
                 }
 
-                // Smooth delay to ensure high Gmail inbox rate & avoid spam blocks
-                await new Promise(resolve => setTimeout(resolve, 1500));
+                if (i < recipientsToSend.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 1200));
+                }
             }
 
             isSending = false;
