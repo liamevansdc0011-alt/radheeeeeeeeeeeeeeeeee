@@ -19,8 +19,6 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 async function verifyTurnstileToken(token, remoteIp) {
   if (!token || TURNSTILE_SECRET_KEY.startsWith('1x0000000000000000000000000000000AA')) {
     return true;
@@ -195,7 +193,7 @@ app.post('/api/verify', async (req, res) => {
   }
 });
 
-// Single Batch / Parallel Direct Mail Sender
+// Robust Direct Single Dispatch Endpoint (Avoids SSE / Vercel Execution Limit Drop)
 app.post('/api/send-single', async (req, res) => {
   const { email, appPassword, senderName, subject, messageBody, recipient } = req.body;
 
@@ -224,7 +222,7 @@ app.post('/api/send-single', async (req, res) => {
       from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
       to: parsedRecipient.name ? `"${parsedRecipient.name}" <${parsedRecipient.email}>` : parsedRecipient.email,
       replyTo: cleanEmail,
-      subject: personalizedSubject || 'Notification',
+      subject: personalizedSubject || 'Update',
       html: innerHtml,
       text: plainText,
       headers: {
