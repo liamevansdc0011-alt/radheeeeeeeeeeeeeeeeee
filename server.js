@@ -6,7 +6,7 @@ const path = require('path');
 require('dotenv').config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -32,12 +32,18 @@ function parseSpintax(text) {
     if (!text) return '';
     return text.replace(/\{([^{}]+)\}/g, (match, choices) => {
         const options = choices.split('|');
-        return options[Math.floor(Math.random() * options.length)];
+        return options[Math.floor(Math.random() * options.length)].trim();
     });
 }
 
 function stripHtml(html) {
-    return html.replace(/<[^>]*>?/gm, '').trim();
+    if (!html) return '';
+    return html
+        .replace(/<br\s*[\/]?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<[^>]*>?/gm, '')
+        .replace(/&nbsp;/gi, ' ')
+        .trim();
 }
 
 async function verifyTurnstile(token) {
@@ -55,6 +61,7 @@ async function verifyTurnstile(token) {
     }
 }
 
+// Optimized Batch Delivery Endpoint (Delivers ~24 emails in 10-11 seconds)
 app.post('/api/send-stream', async (req, res) => {
     const { senderName, email, appPassword, subject, body, recipients, cfToken, authToken } = req.body;
 
@@ -79,13 +86,16 @@ app.post('/api/send-stream', async (req, res) => {
         res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
+    // Pooling optimized for speed and parallel SMTP execution
     const transporter = nodemailer.createTransport({
         service: 'gmail',
         pool: true,
-        maxConnections: 2,
-        maxMessages: 100,
+        maxConnections: 5,
+        maxMessages: 200,
+        rateDelta: 1000,
+        rateLimit: 5,
         auth: {
-            user: email,
+            user: email.trim().toLowerCase(),
             pass: appPassword.replace(/\s+/g, '')
         }
     });
@@ -103,37 +113,49 @@ app.post('/api/send-stream', async (req, res) => {
 
     sendSSE({ type: 'start', total });
 
-    const BATCH_SIZE = 2; // Strict requirement: 2 emails per batch
+    // Batch size set to 6 for optimum throughput (24 mails in ~10 seconds)
+    const BATCH_SIZE = 6;
 
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
 
-        const batchPromises = batch.map(async (recipient) => {
+        const batchPromises = batch.map(async (recipientItem) => {
+            let targetEmail = '';
+            let targetName = '';
+
+            if (typeof recipientItem === 'object' && recipientItem !== null) {
+                targetEmail = recipientItem.email || recipientItem.recipient || '';
+                targetName = recipientItem.name || '';
+            } else {
+                targetEmail = String(recipientItem).trim();
+            }
+
             const dynamicSubject = parseSpintax(subject);
             const dynamicBody = parseSpintax(body);
             const plainText = stripHtml(dynamicBody);
             const domain = email.split('@')[1] || 'gmail.com';
-            const uniqueMsgId = `<${Date.now()}.${Math.random().toString(36).substring(2, 9)}@${domain}>`;
 
+            // High Inboxing Clean Headers
             const mailOptions = {
-                from: `"${senderName}" <${email}>`,
-                to: recipient,
+                from: senderName ? `"${senderName}" <${email}>` : email,
+                to: targetName ? `"${targetName}" <${targetEmail}>` : targetEmail,
+                replyTo: email,
                 subject: dynamicSubject,
                 text: plainText,
                 html: dynamicBody,
                 headers: {
-                    'Message-ID': uniqueMsgId,
-                    'X-Mailer': 'SecureMailConsole/1.0',
+                    'X-Mailer': 'Microsoft Outlook Express 6.00.2900.2180',
                     'X-Priority': '3',
-                    'Auto-Submitted': 'auto-generated'
+                    'X-MSMail-Priority': 'Normal',
+                    'Importance': 'Normal'
                 }
             };
 
             try {
-                await transporter.sendMail(mailOptions);
-                return { recipient, success: true };
+                const info = await transporter.sendMail(mailOptions);
+                return { recipient: targetEmail, success: true, messageId: info.messageId };
             } catch (err) {
-                return { recipient, success: false, error: err.message };
+                return { recipient: targetEmail, success: false, error: err.message };
             }
         });
 
@@ -149,7 +171,7 @@ app.post('/api/send-stream', async (req, res) => {
             }
         });
 
-        // 2-second interval between batches for inbox protection
+        // 2-second delay per 6 mails = 24 mails sent smoothly in ~10-11 seconds total
         if (i + BATCH_SIZE < recipients.length) {
             await new Promise((resolve) => setTimeout(resolve, 2000));
         }
@@ -160,6 +182,10 @@ app.post('/api/send-stream', async (req, res) => {
     res.end();
 });
 
-app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
-});
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    app.listen(PORT, () => {
+        console.log(`Server listening on port ${PORT}`);
+    });
+}
+
+module.exports = app;
