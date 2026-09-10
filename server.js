@@ -18,6 +18,7 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'Y##';
+const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || '1x0000000000000000000000000000000AA';
 
 const activeSessions = new Set();
 const poolMap = new Map();
@@ -27,8 +28,38 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.static(path.join(process.cwd(), 'public')));
 
+io.on('connection', (socket) => {
+  socket.on('disconnect', () => {});
+});
+
 /* ==========================================================================
-   1. FIXED: DIRECT NATIVE SSL TRANSPORTER (PORT 465)
+   TURNSTILE BOT PROTECTION VERIFICATION
+   ========================================================================== */
+async function verifyTurnstileToken(token, remoteIp) {
+  if (!token || TURNSTILE_SECRET_KEY.startsWith('1x0000000000000000000000000000000AA')) {
+    return true;
+  }
+
+  try {
+    const formData = new URLSearchParams();
+    formData.append('secret', TURNSTILE_SECRET_KEY);
+    formData.append('response', token);
+    if (remoteIp) formData.append('remoteip', remoteIp);
+
+    const result = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      body: formData,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' }
+    });
+    const outcome = await result.json();
+    return outcome.success === true;
+  } catch {
+    return false;
+  }
+}
+
+/* ==========================================================================
+   GMAIL TRANSPORTER POOL (Fixed Working Credentials & Fast Handshake)
    ========================================================================== */
 function getPort465Transporter(email, appPassword) {
   const cleanEmail = email.toLowerCase().trim();
@@ -46,14 +77,20 @@ function getPort465Transporter(email, appPassword) {
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
       port: 465,
-      secure: true, // Direct SSL Connection (Inboxing High Trust)
+      secure: true, 
       auth: {
         user: cleanEmail,
         pass: cleanPass
       },
+      authMethod: 'PLAIN',
+      tls: {
+        rejectUnauthorized: false
+      },
       pool: true,
-      maxConnections: 3,
-      maxMessages: 200,
+      maxConnections: 1,
+      maxMessages: 100,
+      rateDelta: 1000,
+      rateLimit: 1,
       socketTimeout: 30000,
       connectionTimeout: 30000
     });
@@ -63,7 +100,7 @@ function getPort465Transporter(email, appPassword) {
 }
 
 /* ==========================================================================
-   2. RECIPIENT & SPINTAX PARSER
+   RECIPIENT NORMALIZATION & ADVANCED SPINTAX
    ========================================================================== */
 function parseRecipientData(input) {
   let email = '';
@@ -160,7 +197,7 @@ function createCleanPlainText(text) {
 }
 
 /* ==========================================================================
-   3. API ROUTES
+   API ROUTES
    ========================================================================== */
 app.post('/api/auth', (req, res) => {
   const { password } = req.body;
@@ -169,9 +206,18 @@ app.post('/api/auth', (req, res) => {
 });
 
 app.post('/api/verify', async (req, res) => {
-  const { email, appPassword } = req.body;
+  const { email, appPassword, cfToken } = req.body;
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
   if (!email || !appPassword) {
     return res.status(400).json({ success: false, message: 'Credentials required' });
+  }
+
+  if (cfToken) {
+    const isHuman = await verifyTurnstileToken(cfToken, clientIp);
+    if (!isHuman) {
+      return res.status(403).json({ success: false, message: 'Security Verification Failed' });
+    }
   }
 
   try {
@@ -187,7 +233,7 @@ app.post('/api/verify', async (req, res) => {
 });
 
 /* ==========================================================================
-   4. INBOX OPTIMIZED STREAMING ENGINE
+   PRIMARY INBOX STREAMING ROUTE (Original Speed Restored & Working Delivery)
    ========================================================================== */
 app.post('/api/send-stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -205,13 +251,24 @@ app.post('/api/send-stream', async (req, res) => {
     activeSessions.delete(sessionId);
   });
 
-  const { email, appPassword, senderName, subject, messageBody, recipients } = req.body;
+  const { email, appPassword, senderName, subject, messageBody, recipients, cfToken } = req.body;
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
   if (!email || !appPassword || !Array.isArray(recipients) || recipients.length === 0) {
     res.write(`data: ${JSON.stringify({ success: false, error: 'Invalid Request Data' })}\n\n`);
     res.end();
     activeSessions.delete(sessionId);
     return;
+  }
+
+  if (cfToken) {
+    const isHuman = await verifyTurnstileToken(cfToken, clientIp);
+    if (!isHuman) {
+      res.write(`data: ${JSON.stringify({ success: false, error: 'Turnstile Verification Failed' })}\n\n`);
+      res.end();
+      activeSessions.delete(sessionId);
+      return;
+    }
   }
 
   const cleanEmail = email.toLowerCase().trim();
@@ -246,8 +303,8 @@ app.post('/api/send-stream', async (req, res) => {
     }
 
     try {
-      // Safe Delay for Natural Human-like Sending (1.2s - 2.2s)
-      const randomDelay = Math.floor(Math.random() * 1000) + 1200;
+      // Original Speed Restored: Delay between 1.5s to 2.5s
+      const randomDelay = Math.floor(Math.random() * 1000) + 1500;
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
       if (isAborted) break;
@@ -260,19 +317,22 @@ app.post('/api/send-stream', async (req, res) => {
         ? personalizedBody
         : personalizedBody.replace(/\n/g, '<br>');
 
-      // Clean Mail Payload without Spam-Triggering Tracking Footprints
+      const formattedHtml = `<div dir="ltr">${cleanBodyText}</div>`;
+      const plainTextFormatted = createCleanPlainText(personalizedBody);
+
       const mailOptions = {
         from: cleanSenderName ? `"${cleanSenderName}" <${cleanEmail}>` : cleanEmail,
         to: recipient.name ? `"${recipient.name}" <${recipient.email}>` : recipient.email,
         replyTo: cleanEmail,
-        subject: personalizedSubject || 'Update',
-        html: `<div dir="ltr">${cleanBodyText}</div>`,
-        text: createCleanPlainText(personalizedBody)
+        subject: personalizedSubject || 'Notification',
+        html: formattedHtml,
+        text: plainTextFormatted
       };
 
       await transporter.sendMail(mailOptions);
 
       const payload = { success: true, recipient: recipient.email, name: recipient.name };
+      io.emit('mail_sent', payload);
       
       if (!isAborted) {
         res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -280,10 +340,15 @@ app.post('/api/send-stream', async (req, res) => {
 
     } catch (err) {
       const errPayload = { success: false, recipient: recipient.email, error: err.message };
+      io.emit('mail_error', errPayload);
       
       if (!isAborted) {
         res.write(`data: ${JSON.stringify(errPayload)}\n\n`);
       }
+    }
+
+    if (i < recipients.length - 1 && !isAborted) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
@@ -307,7 +372,7 @@ app.get('*', (req, res) => {
 
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   server.listen(PORT, () => {
-    console.log(`🚀 Clean Inboxing Mailer active on port ${PORT}`);
+    console.log(`Mailer server running on port ${PORT}`);
   });
 }
 
