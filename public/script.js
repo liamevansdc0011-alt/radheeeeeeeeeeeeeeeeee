@@ -63,7 +63,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Real Double-Click Logout Handler
     if (logoutBtn) {
         logoutBtn.addEventListener('dblclick', () => {
             sessionStorage.removeItem('authenticated');
@@ -179,53 +178,41 @@ document.addEventListener('DOMContentLoaded', () => {
             let sentCount = 0;
             let failedCount = 0;
 
-            const response = await fetch('/api/send-stream', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: emailVal,
-                    appPassword: appPasswordVal,
-                    senderName: senderNameVal,
-                    subject: subjectVal,
-                    messageBody: messageBodyVal,
-                    recipients: recipientsToSend,
-                    cfToken: turnstileResponse
-                })
-            });
-
-            if (!response.ok) throw new Error('Streaming connection failed.');
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
+            for (let i = 0; i < recipientsToSend.length; i++) {
                 if (stopRequested) break;
 
-                const { done, value } = await reader.read();
-                if (done) break;
+                const currentRecipient = recipientsToSend[i];
 
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n\n');
-                buffer = lines.pop();
+                try {
+                    const res = await fetch('/api/send-single', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            email: emailVal,
+                            appPassword: appPasswordVal,
+                            senderName: senderNameVal,
+                            subject: subjectVal,
+                            messageBody: messageBodyVal,
+                            recipient: currentRecipient
+                        })
+                    });
 
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const dataStr = line.replace('data: ', '').trim();
-                        if (dataStr === '[DONE]') break;
+                    const data = await res.json();
 
-                        try {
-                            const event = JSON.parse(dataStr);
-                            if (event.success) {
-                                sentCount++;
-                                updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Sent: ${event.recipient}`);
-                            } else {
-                                failedCount++;
-                                updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Failed: ${event.recipient}`);
-                            }
-                        } catch (e) { }
+                    if (data.success) {
+                        sentCount++;
+                        updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Sent: ${data.recipient}`);
+                    } else {
+                        failedCount++;
+                        updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Failed: ${data.recipient || currentRecipient}`);
                     }
+                } catch (e) {
+                    failedCount++;
+                    updateProgressUI(sentCount, failedCount, recipientsToSend.length, `Failed: ${currentRecipient}`);
                 }
+
+                // Smooth delay to ensure high Gmail inbox rate & avoid spam blocks
+                await new Promise(resolve => setTimeout(resolve, 1500));
             }
 
             isSending = false;
@@ -239,24 +226,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (err) {
             console.error('Send error:', err);
-            alert('Connection error occurred during send stream.');
+            alert('Connection error occurred during sending.');
         } finally {
             isSending = false;
             finishSendingUI();
         }
     });
 
-    stopBtn.addEventListener('click', async () => {
+    stopBtn.addEventListener('click', () => {
         stopRequested = true;
         statusIcon.className = 'fa-solid fa-spinner fa-spin text-warning';
         statusText.textContent = 'Stopping send process...';
         stopBtn.disabled = true;
-
-        try {
-            await fetch('/api/stop', { method: 'POST' });
-        } catch (e) {
-            console.error('Stop error', e);
-        }
     });
 
     function startSendingUI(total) {
