@@ -61,7 +61,7 @@ async function verifyTurnstile(token) {
     }
 }
 
-// OPTIMIZED INBOX DELIVERY ENDPOINT (SAME SPEED, NO REF ID)
+// HIGH INBOXING STREAM ENDPOINT
 app.post('/api/send-stream', async (req, res) => {
     const { senderName, email, appPassword, subject, body, recipients, cfToken, authToken } = req.body;
 
@@ -86,14 +86,14 @@ app.post('/api/send-stream', async (req, res) => {
         res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    // Nodemailer connection pool tuned to match human sending pattern
+    // Nodemailer connection pool tuned to match genuine desktop app sockets
     const transporter = nodemailer.createTransport({
         service: 'gmail',
         pool: true,
-        maxConnections: 5,   // Prevents Gmail connection drops
+        maxConnections: 5,
         maxMessages: 100,
         rateDelta: 1000,
-        rateLimit: 5,        // Smooth socket throttling to prevent spam flags
+        rateLimit: 5,
         auth: {
             user: email.trim().toLowerCase(),
             pass: appPassword.replace(/\s+/g, '')
@@ -113,7 +113,7 @@ app.post('/api/send-stream', async (req, res) => {
 
     sendSSE({ type: 'start', total });
 
-    // 6 emails batch with micro-delays (24 mails in ~10 seconds)
+    // Optimal batching for fast delivery without triggering spam detection
     const BATCH_SIZE = 6;
 
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
@@ -141,7 +141,7 @@ app.post('/api/send-stream', async (req, res) => {
                 subject: dynamicSubject,
                 text: plainText,
                 html: dynamicBody,
-                // Critical Headers for bypassing Gmail & Outlook Spam filters
+                // Direct Inbox Bypass Headers
                 headers: {
                     'X-Mailer': 'Microsoft Outlook Express 6.00.2900.2180',
                     'X-MimeOLE': 'Produced By Microsoft MimeOLE V6.00.2900.2180',
